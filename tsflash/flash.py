@@ -1,6 +1,7 @@
 """Core flashing functionality."""
 
 import os
+import platform
 import subprocess
 import logging
 from tqdm import tqdm
@@ -74,11 +75,15 @@ def unmount_device(device):
     
     logger.info(f"Found {len(mounted)} mounted partition(s) for {device}")
     
+    # Use diskutil on macOS, umount on Linux
+    is_macos = platform.system() == 'Darwin'
+    unmount_cmd = ['diskutil', 'unmount'] if is_macos else ['umount']
+    
     for mount_point in mounted:
         logger.debug(f"Unmounting {mount_point}")
         try:
             result = subprocess.run(
-                ['umount', mount_point],
+                unmount_cmd + [mount_point],
                 capture_output=True,
                 text=True,
                 check=False
