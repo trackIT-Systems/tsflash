@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tsflash"
+version = "0.1.0"
+description = "SD Card Flashing Tool"
+requires-python = ">=3.7"
+dependencies = [
+    "tqdm>=4.64.0",
+]
+
+[project.scripts]
+tsflash = "tsflash.cli:main"
+
+[tool.setuptools]
+packages = ["tsflash"]
