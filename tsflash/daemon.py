@@ -16,6 +16,15 @@ from .rpiboot import run_rpiboot
 
 logger = logging.getLogger(__name__)
 
+# Port state constants
+NOT_CONNECTED = 'not_connected'
+UNKNOWN = 'unknown'
+BOOTING = 'booting'
+WAITING = 'waiting'
+FLASHING = 'flashing'
+COMPLETED = 'completed'
+FAILED = 'failed'
+
 # Global flag for graceful shutdown
 _shutdown_requested = False
 _flash_executor: Optional[ThreadPoolExecutor] = None
@@ -88,8 +97,36 @@ def get_downstream_block_devices(ports_data: Dict, monitor_port: str) -> List[st
     return sorted(block_devices)
 
 
+def find_port_for_block_device(ports_data: Dict, block_device: str, monitor_port: str) -> Optional[str]:
+    """
+    Find the USB port that owns a given block device.
+    
+    Args:
+        ports_data: Dictionary of all USB ports
+        block_device: Block device path (e.g., "/dev/sda")
+        monitor_port: Port to monitor (e.g., "1-2")
+        
+    Returns:
+        Port string if found, None otherwise
+    """
+    # Filter to downstream ports
+    downstream_ports = filter_ports_by_limit(ports_data, monitor_port)
+    
+    # Search for the block device
+    for port_str, port_info in downstream_ports.items():
+        # Skip the monitor port itself (it's the hub, not a device)
+        if port_str == monitor_port:
+            continue
+        
+        # Check if this port has the block device
+        if block_device in port_info.get('block_devices', []):
+            return port_str
+    
+    return None
+
+
 def flash_device(mapped_image, device: str, block_size: str, image_path: str, 
-                 progress_dict: Dict[str, dict]) -> bool:
+                 port_str: str, port_states: Dict[str, dict]) -> bool:
     """
     Flash a device with the configured image.
     
@@ -98,16 +135,26 @@ def flash_device(mapped_image, device: str, block_size: str, image_path: str,
         device: Block device path (e.g., "/dev/sda")
         block_size: Block size for flashing (e.g., "4M")
         image_path: Path string for logging
-        progress_dict: Shared dictionary to update with progress information
+        port_str: USB port string for this device
+        port_states: Shared dictionary to update with port state information
         
     Returns:
         True if successful, False otherwise
     """
-    logger.info(f"Starting flash operation for {device}")
+    logger.info(f"Starting flash operation for {device} on port {port_str}")
     
-    # Initialize progress tracking
-    progress_dict[device] = {
-        'status': 'flashing',
+    # Initialize progress tracking in port state
+    if port_str not in port_states:
+        port_states[port_str] = {
+            'state': FLASHING,
+            'block_devices': [],
+            'detected_time': time.time(),
+            'progress': {},
+            'error': None
+        }
+    
+    port_states[port_str]['state'] = FLASHING
+    port_states[port_str]['progress'] = {
         'bytes_written': 0,
         'total_bytes': 0,
         'percent': 0.0,
@@ -115,14 +162,14 @@ def flash_device(mapped_image, device: str, block_size: str, image_path: str,
     }
     
     def progress_callback(bytes_written: int, total_bytes: int, percent: float):
-        """Callback to update progress dictionary."""
-        if device in progress_dict:
-            progress_dict[device].update({
+        """Callback to update progress in port state."""
+        if port_str in port_states:
+            port_states[port_str]['progress'].update({
                 'bytes_written': bytes_written,
                 'total_bytes': total_bytes,
-                'percent': percent,
-                'status': 'flashing'
+                'percent': percent
             })
+            port_states[port_str]['state'] = FLASHING
     
     try:
         # Use non-interactive mode to avoid progress bar interfering with logs
@@ -130,22 +177,19 @@ def flash_device(mapped_image, device: str, block_size: str, image_path: str,
                    image_path=image_path, progress_callback=progress_callback)
         
         # Mark as completed
-        if device in progress_dict:
-            progress_dict[device].update({
-                'status': 'completed',
-                'percent': 100.0
-            })
+        if port_str in port_states:
+            port_states[port_str]['state'] = COMPLETED
+            port_states[port_str]['progress']['percent'] = 100.0
+            port_states[port_str]['error'] = None
         
-        logger.info(f"Successfully flashed {device}")
+        logger.info(f"Successfully flashed {device} on port {port_str}")
         return True
     except Exception as e:
         # Mark as failed
-        if device in progress_dict:
-            progress_dict[device].update({
-                'status': 'failed',
-                'error': str(e)
-            })
-        logger.error(f"Failed to flash {device}: {e}")
+        if port_str in port_states:
+            port_states[port_str]['state'] = FAILED
+            port_states[port_str]['error'] = str(e)
+        logger.error(f"Failed to flash {device} on port {port_str}: {e}")
         return False
 
 
@@ -162,13 +206,15 @@ def cleanup_image_mmap() -> None:
         _image_mmap = None
 
 
-def boot_rpiboot_device(port: str, timeout: float = 60.0) -> bool:
+def boot_rpiboot_device(port: str, timeout: float = 60.0, stage_callback=None) -> bool:
     """
     Boot a rpiboot-compatible device into mass storage mode.
     
     Args:
         port: USB port pathname to target (e.g., "1-2.3")
         timeout: Timeout in seconds for rpiboot operation (default: 60.0)
+        stage_callback: Optional callback function(stage: str) -> None called with
+                        stage updates during boot process.
         
     Returns:
         True if rpiboot completed successfully, False otherwise
@@ -188,7 +234,7 @@ def boot_rpiboot_device(port: str, timeout: float = 60.0) -> bool:
                 # We need to modify run_rpiboot to return the process, but for now
                 # we'll use a simpler approach: call run_rpiboot and handle timeout
                 # by checking completion status
-                success, exit_code = run_rpiboot(port=port, verbose=False)
+                success, exit_code = run_rpiboot(port=port, verbose=False, stage_callback=stage_callback)
                 result_container['success'] = success
                 result_container['exit_code'] = exit_code
             except Exception as e:
@@ -233,20 +279,9 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     """
     global _shutdown_requested, _flash_executor, _image_mmap
     
-    # Track devices we've seen and their timestamps
-    device_timestamps: Dict[str, float] = {}
-    # Track devices currently being flashed
-    flashing_devices: Set[str] = set()
-    # Track devices that have been successfully flashed
-    flashed_devices: Set[str] = set()
-    # Track progress of flashing devices (shared across threads)
-    device_progress: Dict[str, dict] = {}
-    # Track ports currently being booted via rpiboot
-    rpibooting_devices: Set[str] = set()
-    # Track ports that have completed rpiboot successfully
-    rpibooted_ports: Set[str] = set()
-    # Track ports where rpiboot failed
-    rpiboot_failed_ports: Set[str] = set()
+    # Unified port state tracking
+    # Each port has: state, block_devices, detected_time, progress, error
+    port_states: Dict[str, dict] = {}
     
     # Create thread pool for parallel flashing
     _flash_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="flash")
@@ -259,177 +294,179 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     try:
         while not _shutdown_requested:
             try:
+                current_time = time.time()
+                
                 # Enumerate USB ports
                 ports_data = enumerate_all_usb_ports()
                 
                 # Filter to downstream ports
                 downstream_ports = filter_ports_by_limit(ports_data, monitor_port)
+                current_port_strings = set(downstream_ports.keys())
                 
-                # Check for rpiboot-compatible devices that need booting
+                # Process each downstream port
                 for port_str, port_info in downstream_ports.items():
                     # Skip the monitor port itself (it's the hub, not a device)
                     if port_str == monitor_port:
                         continue
                     
-                    # Check if this is a rpiboot-compatible device
-                    if not is_rpiboot_device(port_info):
-                        continue
+                    # Get current state for this port (default to not_connected)
+                    port_state = port_states.get(port_str, {})
+                    current_state = port_state.get('state', NOT_CONNECTED)
+                    block_devices = port_info.get('block_devices', [])
+                    is_rpiboot = is_rpiboot_device(port_info)
                     
-                    # Skip if already being booted
-                    if port_str in rpibooting_devices:
-                        continue
+                    # State transition logic
+                    if current_state == NOT_CONNECTED:
+                        # Port was empty or newly detected
+                        if block_devices:
+                            # Block device detected directly
+                            logger.info(f"Block device detected at port {port_str}: {block_devices}")
+                            port_states[port_str] = {
+                                'state': WAITING,
+                                'block_devices': block_devices.copy(),
+                                'detected_time': current_time,
+                                'progress': {},
+                                'error': None
+                            }
+                        elif is_rpiboot:
+                            # rpiboot-compatible device detected (no block devices yet)
+                            logger.info(f"rpiboot-compatible device detected at port {port_str}, starting rpiboot")
+                            port_states[port_str] = {
+                                'state': BOOTING,
+                                'block_devices': [],
+                                'detected_time': current_time,
+                                'progress': {},
+                                'error': None
+                            }
+                            
+                            # Execute rpiboot in background thread
+                            def handle_rpiboot_completion(port: str, states: Dict[str, dict]):
+                                try:
+                                    success = boot_rpiboot_device(port, timeout=60.0)
+                                    if port in states:
+                                        if success:
+                                            # rpiboot completed - state will transition to WAITING when block device appears
+                                            logger.info(f"rpiboot completed successfully for port {port}, waiting for block device")
+                                            # Don't change state here - let the next poll detect the block device
+                                        else:
+                                            states[port]['state'] = FAILED
+                                            states[port]['error'] = 'rpiboot failed'
+                                            logger.error(f"rpiboot failed for port {port}")
+                                except Exception as e:
+                                    if port in states:
+                                        states[port]['state'] = FAILED
+                                        states[port]['error'] = str(e)
+                                    logger.error(f"Unexpected error during rpiboot for port {port}: {e}")
+                            
+                            # Start rpiboot in background thread
+                            threading.Thread(
+                                target=handle_rpiboot_completion,
+                                args=(port_str, port_states),
+                                daemon=True
+                            ).start()
+                        elif port_info.get('vendor_id') is not None or port_info.get('product_id') is not None:
+                            # Device connected but not rpiboot and no block devices
+                            port_states[port_str] = {
+                                'state': UNKNOWN,
+                                'block_devices': [],
+                                'detected_time': current_time,
+                                'progress': {},
+                                'error': None
+                            }
                     
-                    # Skip if already booted successfully
-                    if port_str in rpibooted_ports:
-                        continue
+                    elif current_state == BOOTING:
+                        # rpiboot is running - check if block device appeared
+                        if block_devices:
+                            # Block device appeared after rpiboot
+                            logger.info(f"Block device appeared at port {port_str} after rpiboot: {block_devices}")
+                            port_states[port_str]['state'] = WAITING
+                            port_states[port_str]['block_devices'] = block_devices.copy()
+                            port_states[port_str]['detected_time'] = current_time
+                        # If still booting and no block devices, keep waiting
                     
-                    # Skip if rpiboot previously failed
-                    if port_str in rpiboot_failed_ports:
-                        continue
-                    
-                    # Skip if device already has block devices (already in mass storage mode)
-                    if port_info.get('block_devices'):
-                        continue
-                    
-                    # This device needs rpiboot - start booting it
-                    logger.info(f"Detected rpiboot-compatible device at port {port_str}, starting rpiboot")
-                    rpibooting_devices.add(port_str)
-                    
-                    # Execute rpiboot in background thread
-                    def handle_rpiboot_completion(port: str):
-                        try:
-                            success = boot_rpiboot_device(port, timeout=60.0)
-                            rpibooting_devices.discard(port)
-                            if success:
-                                rpibooted_ports.add(port)
-                                logger.info(f"rpiboot completed successfully for port {port}, device should appear as block device")
-                            else:
-                                rpiboot_failed_ports.add(port)
-                                logger.error(f"rpiboot failed for port {port}, skipping device")
-                        except Exception as e:
-                            logger.error(f"Unexpected error during rpiboot for port {port}: {e}")
-                            rpibooting_devices.discard(port)
-                            rpiboot_failed_ports.add(port)
-                    
-                    # Start rpiboot in background thread
-                    threading.Thread(
-                        target=handle_rpiboot_completion,
-                        args=(port_str,),
-                        daemon=True
-                    ).start()
-                
-                # Get current block devices on downstream ports
-                current_devices = get_downstream_block_devices(ports_data, monitor_port)
-                
-                current_time = time.time()
-                
-                # Check for new devices
-                for device in current_devices:
-                    if device in flashing_devices:
-                        # Already flashing this device
-                        continue
-                    
-                    if device in flashed_devices:
-                        # Already flashed this device, wait for removal
-                        continue
-                    
-                    if device not in device_timestamps:
-                        # New device detected
-                        logger.info(f"New device detected: {device}")
-                        device_timestamps[device] = current_time
-                    
-                    # Check if device has been stable long enough
-                    time_since_detection = current_time - device_timestamps[device]
-                    if time_since_detection >= config.stable_delay:
-                        # Device is stable, start flashing
-                        logger.info(f"Device {device} is stable, starting flash operation")
-                        flashing_devices.add(device)
+                    elif current_state == WAITING:
+                        # Block device detected, waiting for stable_delay
+                        # Update block devices list in case it changed
+                        port_states[port_str]['block_devices'] = block_devices.copy()
                         
-                        # Submit flash job to thread pool
-                        # Use memory-mapped image (should always be available)
-                        if not _image_mmap:
-                            logger.error("Memory-mapped image not available, cannot flash device")
-                            flashing_devices.discard(device)
-                            continue
-                        
-                        future = _flash_executor.submit(
-                            flash_device,
-                            _image_mmap,
-                            device,
-                            config.block_size,
-                            config.image_path,  # Pass path for logging
-                            device_progress  # Pass shared progress dictionary
-                        )
-                        
-                        # Track completion in background
-                        def handle_completion(dev: str, fut):
-                            try:
-                                success = fut.result()
-                                flashing_devices.discard(dev)
-                                if success:
-                                    flashed_devices.add(dev)
-                                    # Update progress to completed
-                                    if dev in device_progress:
-                                        device_progress[dev]['status'] = 'completed'
-                                        device_progress[dev]['percent'] = 100.0
-                                    logger.info(f"Flash completed for {dev}, waiting for removal")
-                                else:
-                                    # Failed flash, allow retry
-                                    device_timestamps.pop(dev, None)
-                                    device_progress.pop(dev, None)
-                            except Exception as e:
-                                logger.error(f"Unexpected error during flash of {dev}: {e}")
-                                flashing_devices.discard(dev)
-                                device_timestamps.pop(dev, None)
-                                device_progress.pop(dev, None)
-                        
-                        # Use a separate thread to wait for completion
-                        threading.Thread(
-                            target=handle_completion,
-                            args=(device, future),
-                            daemon=True
-                        ).start()
+                        if not block_devices:
+                            # Block device disappeared while waiting
+                            logger.warning(f"Block device disappeared at port {port_str} while waiting")
+                            port_states[port_str]['state'] = NOT_CONNECTED
+                        else:
+                            # Check if stable_delay has elapsed
+                            detected_time = port_states[port_str].get('detected_time', current_time)
+                            time_since_detection = current_time - detected_time
+                            
+                            if time_since_detection >= config.stable_delay:
+                                # Device is stable, start flashing
+                                logger.info(f"Device at port {port_str} is stable, starting flash operation")
+                                
+                                if not _image_mmap:
+                                    logger.error("Memory-mapped image not available, cannot flash device")
+                                    port_states[port_str]['state'] = FAILED
+                                    port_states[port_str]['error'] = 'Image not available'
+                                    continue
+                                
+                                # Update state to FLASHING before submitting jobs
+                                port_states[port_str]['state'] = FLASHING
+                                port_states[port_str]['progress'] = {
+                                    'bytes_written': 0,
+                                    'total_bytes': 0,
+                                    'percent': 0.0,
+                                    'start_time': current_time
+                                }
+                                
+                                # Flash all block devices on this port
+                                for device in block_devices:
+                                    future = _flash_executor.submit(
+                                        flash_device,
+                                        _image_mmap,
+                                        device,
+                                        config.block_size,
+                                        config.image_path,
+                                        port_str,
+                                        port_states
+                                    )
+                    
+                    elif current_state == FLASHING:
+                        # Flashing in progress - state updated by flash_device callback
+                        # Update block devices list in case it changed
+                        port_states[port_str]['block_devices'] = block_devices.copy()
+                    
+                    elif current_state == COMPLETED:
+                        # Flash completed - wait for device removal
+                        port_states[port_str]['block_devices'] = block_devices.copy()
+                        if not block_devices:
+                            # Device removed after completion
+                            logger.info(f"Flashed device at port {port_str} has been removed")
+                            port_states.pop(port_str, None)
+                    
+                    elif current_state == FAILED:
+                        # Failed state - keep tracking until device is removed
+                        port_states[port_str]['block_devices'] = block_devices.copy()
+                        if not block_devices:
+                            # Device removed after failure
+                            logger.debug(f"Failed device at port {port_str} has been removed")
+                            port_states.pop(port_str, None)
+                    
+                    elif current_state == UNKNOWN:
+                        # Unknown device - check if it got block devices or was removed
+                        if block_devices:
+                            # Block device appeared - transition to waiting
+                            logger.info(f"Block device appeared at port {port_str}: {block_devices}")
+                            port_states[port_str]['state'] = WAITING
+                            port_states[port_str]['block_devices'] = block_devices.copy()
+                            port_states[port_str]['detected_time'] = current_time
+                        elif port_info.get('vendor_id') is None and port_info.get('product_id') is None:
+                            # Device removed
+                            port_states.pop(port_str, None)
                 
-                # Check for removed devices (that were flashed)
-                devices_to_remove = []
-                for device in flashed_devices:
-                    if device not in current_devices:
-                        # Device was removed
-                        logger.info(f"Flashed device {device} has been removed")
-                        devices_to_remove.append(device)
-                
-                for device in devices_to_remove:
-                    flashed_devices.remove(device)
-                    device_timestamps.pop(device, None)
-                    device_progress.pop(device, None)  # Clean up progress
-                
-                # Clean up timestamps and progress for devices that are no longer present
-                # (but weren't flashed - they may have been removed before flashing)
-                for device in list(device_timestamps.keys()):
-                    if device not in current_devices and device not in flashing_devices:
-                        device_timestamps.pop(device)
-                        device_progress.pop(device, None)  # Clean up progress
-                
-                # Clean up progress for completed/failed devices that are no longer being tracked
-                for device in list(device_progress.keys()):
-                    if device not in flashing_devices and device not in flashed_devices:
-                        device_progress.pop(device)
-                
-                # Clean up rpiboot state for ports that are no longer present
-                # Check all downstream ports to see which ones still exist
-                current_port_strings = set(downstream_ports.keys())
-                for port_str in list(rpibooting_devices):
+                # Clean up ports that no longer exist
+                for port_str in list(port_states.keys()):
                     if port_str not in current_port_strings:
-                        logger.debug(f"rpibooting port {port_str} no longer present, cleaning up")
-                        rpibooting_devices.discard(port_str)
-                for port_str in list(rpibooted_ports):
-                    if port_str not in current_port_strings:
-                        logger.debug(f"rpibooted port {port_str} no longer present, cleaning up")
-                        rpibooted_ports.discard(port_str)
-                for port_str in list(rpiboot_failed_ports):
-                    if port_str not in current_port_strings:
-                        logger.debug(f"rpiboot-failed port {port_str} no longer present, cleaning up")
-                        rpiboot_failed_ports.discard(port_str)
+                        logger.debug(f"Port {port_str} no longer present, cleaning up")
+                        port_states.pop(port_str, None)
                 
             except Exception as e:
                 logger.error(f"Error during monitoring cycle: {e}", exc_info=True)
@@ -439,8 +476,9 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     
     finally:
         # Shutdown requested - interrupt in-progress flashes
-        if flashing_devices:
-            logger.info(f"Shutdown requested, interrupting {len(flashing_devices)} in-progress flash operation(s)...")
+        flashing_count = sum(1 for state in port_states.values() if state.get('state') == FLASHING)
+        if flashing_count > 0:
+            logger.info(f"Shutdown requested, interrupting {flashing_count} in-progress flash operation(s)...")
         else:
             logger.info("Shutdown requested")
         

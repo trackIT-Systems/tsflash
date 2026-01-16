@@ -10,6 +10,7 @@ from .validators import validate_image_file, validate_block_device
 from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
 from .daemon import run_daemon
 from .rpiboot import run_rpiboot
+from .tui import run_tui
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -165,6 +166,11 @@ def main():
         action='version',
         version=f'tsflash {__version__}'
     )
+    parser.add_argument(
+        '--config',
+        metavar='PATH',
+        help='Path to configuration file (for TUI mode, default: /boot/firmware/tsflash.yml)'
+    )
     
     # Subcommands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
@@ -252,8 +258,8 @@ def main():
     elif args.command == 'rpiboot':
         return cmd_rpiboot(args)
     else:
-        parser.print_help()
-        return 1
+        # No command provided - run TUI
+        return run_tui(args.config)
 
 
 if __name__ == '__main__':

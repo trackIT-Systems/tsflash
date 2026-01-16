@@ -6,7 +6,7 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
-def run_rpiboot(port=None, verbose=False):
+def run_rpiboot(port=None, verbose=False, stage_callback=None):
     """
     Execute rpiboot to boot a Raspberry Pi into mass storage device mode.
     
@@ -14,6 +14,8 @@ def run_rpiboot(port=None, verbose=False):
         port: USB port pathname to target (e.g., "1-2.3"). If None, rpiboot
               will search for any compatible device.
         verbose: If True, pass -v flag to rpiboot and enable verbose logging.
+        stage_callback: Optional callback function(stage: str) -> None called with
+                        stage updates during boot process.
     
     Returns:
         tuple: (success: bool, exit_code: int)
@@ -61,13 +63,37 @@ def run_rpiboot(port=None, verbose=False):
                 if 'failed' in line_lower:
                     logger.error(line)
                     error_detected = True
+                    if stage_callback:
+                        stage_callback("Failed")
                 # Detect success
                 elif 'second stage boot server done' in line_lower:
                     logger.info(line)
                     success_detected = True
-                # Normal progress messages
-                elif 'waiting for' in line_lower or 'sending' in line_lower or 'file read:' in line_lower or 'loading:' in line_lower:
+                    if stage_callback:
+                        stage_callback("Boot complete")
+                # Detect waiting stage
+                elif 'waiting for' in line_lower:
                     logger.info(line)
+                    if stage_callback:
+                        stage_callback("Waiting for device...")
+                # Detect sending stage
+                elif 'sending' in line_lower:
+                    logger.info(line)
+                    if stage_callback:
+                        stage_callback("Sending boot files...")
+                # Detect loading stage
+                elif 'file read:' in line_lower or 'loading:' in line_lower:
+                    logger.info(line)
+                    if stage_callback:
+                        # Try to extract filename
+                        if ':' in line:
+                            file_part = line.split(':', 1)[1].strip()
+                            # Truncate if too long
+                            if len(file_part) > 30:
+                                file_part = file_part[:27] + "..."
+                            stage_callback(f"Loading: {file_part}")
+                        else:
+                            stage_callback("Loading files...")
                 # Other messages - use DEBUG level for verbose details, INFO otherwise
                 else:
                     if verbose:
