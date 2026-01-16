@@ -5,9 +5,10 @@ import logging
 import sys
 
 from . import __version__
-from .flash import flash_image
+from .flash import flash_image, create_image_mmap
 from .validators import validate_image_file, validate_block_device
 from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
+from .daemon import run_daemon
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -51,8 +52,15 @@ def cmd_flash(args):
         return 1
     
     # Flash the image
+    mapped_image = None
     try:
-        flash_image(args.file, args.target, args.block_size)
+        # Create memory-mapped image for efficient access
+        logger.debug(f"Creating memory-mapped image: {args.file}")
+        mapped_image = create_image_mmap(args.file)
+        
+        # Flash using mmap
+        flash_image(mapped_image, args.target, args.block_size, 
+                   non_interactive=args.non_interactive, image_path=args.file)
         logger.info("Flash operation completed successfully")
         return 0
     except ValueError as e:
@@ -113,6 +121,20 @@ def cmd_usb(args):
         return 1
 
 
+def cmd_daemon(args):
+    """Handle the daemon command."""
+    # The daemon module handles its own logging setup, but we can override
+    # with CLI flags if specified
+    if args.verbose or args.quiet:
+        import logging
+        if args.verbose:
+            logging.basicConfig(level=logging.DEBUG)
+        elif args.quiet:
+            logging.basicConfig(level=logging.WARNING)
+    
+    return run_daemon(args.config)
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -158,6 +180,11 @@ def main():
         default='4M',
         help='Block size for reading/writing (default: 4M). Examples: 4M, 1M, 512K'
     )
+    flash_parser.add_argument(
+        '--non-interactive',
+        action='store_true',
+        help='Use logging instead of progress bar (useful for scripts/daemons)'
+    )
     
     # USB subcommand
     usb_parser = subparsers.add_parser(
@@ -180,6 +207,17 @@ def main():
         help='Limit output to a specific port and downstream ports (e.g., 1-2)'
     )
     
+    # Daemon subcommand
+    daemon_parser = subparsers.add_parser(
+        'daemon',
+        help='Run the automatic device flashing daemon'
+    )
+    daemon_parser.add_argument(
+        '--config',
+        metavar='PATH',
+        help='Path to configuration file (default: /boot/firmware/tsflash.yml)'
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -191,6 +229,8 @@ def main():
         return cmd_flash(args)
     elif args.command == 'usb':
         return cmd_usb(args)
+    elif args.command == 'daemon':
+        return cmd_daemon(args)
     else:
         parser.print_help()
         return 1

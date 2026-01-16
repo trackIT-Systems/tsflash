@@ -1,0 +1,21 @@
+# tsflashd Configuration File
+# Copy this file to /boot/firmware/tsflash.yml (default location)
+
+# Path to the image file to flash to devices
+image_path: /data/tsupdate/tsOS-base-arm64-2025.12.6.img
+
+# USB port to monitor (optional - auto-detects first hub if not specified)
+# Examples: "1-2", "1-2.3"
+# port: 1-2
+
+# Block size for flashing (default: 4M)
+# Examples: 4M, 1M, 512K
+block_size: 4M
+
+# Seconds to wait after device appears before flashing (default: 3)
+# This ensures the device connection is stable before attempting to flash
+stable_delay: 1
+
+# Logging level (default: INFO)
+# Options: DEBUG, INFO, WARNING, ERROR, CRITICAL
+log_level: INFO
