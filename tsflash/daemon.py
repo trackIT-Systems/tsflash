@@ -572,7 +572,12 @@ def run_daemon(config_path: Optional[str] = None) -> int:
         monitor_port = find_monitor_port(ports_data, config.port)
         
         if monitor_port is None:
-            logger.error("Could not determine port to monitor")
+            error_msg = "Could not determine port to monitor"
+            if config.port:
+                error_msg += f" (specified port '{config.port}' not found)"
+            else:
+                error_msg += " (no USB hub found for auto-detection)"
+            logger.error(error_msg)
             cleanup_image_mmap()
             return 1
         

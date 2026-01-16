@@ -592,7 +592,14 @@ def run_tui(config_path: Optional[str] = None) -> int:
         monitor_port = find_monitor_port(ports_data, config.port)
         
         if monitor_port is None:
-            logger.error("Could not determine port to monitor")
+            error_msg = "Could not determine port to monitor"
+            if config.port:
+                error_msg += f" (specified port '{config.port}' not found)"
+            else:
+                error_msg += " (no USB hub found for auto-detection)"
+            logger.error(error_msg)
+            # Print to stderr so user sees it even if TUI hasn't started
+            print(f"ERROR: {error_msg}", file=sys.stderr)
             if _tui_image_mmap:
                 try:
                     _tui_image_mmap.close()
