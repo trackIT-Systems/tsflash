@@ -264,7 +264,7 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                     current_time = time.time()
                     if last_log_time is None or (current_time - last_log_time) >= log_interval:
                         logger.info(
-                            f"Progress: {bytes_written / (1024*1024):.2f} MB / "
+                            f"{target_device}: Progress: {bytes_written / (1024*1024):.2f} MB / "
                             f"{file_size / (1024*1024):.2f} MB ({percent:.1f}%)"
                         )
                         last_log_time = current_time

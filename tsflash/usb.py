@@ -320,6 +320,27 @@ def filter_ports_by_limit(ports_data, limit_port):
     return filtered
 
 
+def is_rpiboot_device(port_info: dict) -> bool:
+    """
+    Check if a USB device is rpiboot-compatible.
+    
+    Args:
+        port_info: Device info dictionary from USB enumeration
+        
+    Returns:
+        True if device matches rpiboot-compatible vendor:product IDs, False otherwise
+    """
+    vendor_id = port_info.get("vendor_id")
+    product_id = port_info.get("product_id")
+    
+    # Check for rpiboot-compatible devices: 0x0a5c:0x2712 or 0x0a5c:0x2711
+    if vendor_id == "0x0a5c":
+        if product_id == "0x2712" or product_id == "0x2711":
+            return True
+    
+    return False
+
+
 def format_usb_output(ports_data, json_output=False):
     """
     Format USB port enumeration data for output.

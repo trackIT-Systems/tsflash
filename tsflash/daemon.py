@@ -11,7 +11,8 @@ from typing import Dict, List, Optional, Set
 
 from .config import DaemonConfig, load_config
 from .flash import flash_image, create_image_mmap
-from .usb import enumerate_all_usb_ports, filter_ports_by_limit, find_first_usb_hub
+from .usb import enumerate_all_usb_ports, filter_ports_by_limit, find_first_usb_hub, is_rpiboot_device
+from .rpiboot import run_rpiboot
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,67 @@ def cleanup_image_mmap() -> None:
         _image_mmap = None
 
 
+def boot_rpiboot_device(port: str, timeout: float = 60.0) -> bool:
+    """
+    Boot a rpiboot-compatible device into mass storage mode.
+    
+    Args:
+        port: USB port pathname to target (e.g., "1-2.3")
+        timeout: Timeout in seconds for rpiboot operation (default: 60.0)
+        
+    Returns:
+        True if rpiboot completed successfully, False otherwise
+    """
+    logger.info(f"Starting rpiboot for device at port {port}")
+    
+    try:
+        # Use threading to implement timeout since run_rpiboot uses subprocess.Popen
+        # We'll wrap run_rpiboot in a thread and use a timeout
+        import threading
+        
+        result_container = {'success': False, 'completed': False, 'exit_code': 1}
+        exception_container = {'exception': None}
+        
+        def run_rpiboot_thread():
+            try:
+                # We need to modify run_rpiboot to return the process, but for now
+                # we'll use a simpler approach: call run_rpiboot and handle timeout
+                # by checking completion status
+                success, exit_code = run_rpiboot(port=port, verbose=False)
+                result_container['success'] = success
+                result_container['exit_code'] = exit_code
+            except Exception as e:
+                exception_container['exception'] = e
+            finally:
+                result_container['completed'] = True
+        
+        thread = threading.Thread(target=run_rpiboot_thread, daemon=True)
+        thread.start()
+        thread.join(timeout=timeout)
+        
+        if not result_container['completed']:
+            logger.error(f"rpiboot timed out after {timeout} seconds for port {port}")
+            # Note: The rpiboot process may still be running, but we've timed out
+            # The process will continue in the background and may complete later
+            return False
+        
+        if exception_container['exception']:
+            logger.error(f"rpiboot raised exception for port {port}: {exception_container['exception']}")
+            return False
+        
+        if result_container['success']:
+            logger.info(f"rpiboot completed successfully for port {port}")
+            return True
+        else:
+            exit_code = result_container.get('exit_code', 1)
+            logger.error(f"rpiboot failed for port {port} (exit code: {exit_code})")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Unexpected error during rpiboot for port {port}: {e}")
+        return False
+
+
 def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     """
     Main monitoring loop that watches for devices and flashes them.
@@ -179,8 +241,12 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     flashed_devices: Set[str] = set()
     # Track progress of flashing devices (shared across threads)
     device_progress: Dict[str, dict] = {}
-    # Track last progress log time for each device (to throttle logging)
-    last_progress_log: Dict[str, float] = {}
+    # Track ports currently being booted via rpiboot
+    rpibooting_devices: Set[str] = set()
+    # Track ports that have completed rpiboot successfully
+    rpibooted_ports: Set[str] = set()
+    # Track ports where rpiboot failed
+    rpiboot_failed_ports: Set[str] = set()
     
     # Create thread pool for parallel flashing
     _flash_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="flash")
@@ -189,13 +255,68 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
     logger.info(f"Monitoring for block devices, stable_delay={config.stable_delay}s")
     
     poll_interval = 1.0  # Poll every second
-    progress_log_interval = 5.0  # Log progress updates every 5 seconds per device
     
     try:
         while not _shutdown_requested:
             try:
                 # Enumerate USB ports
                 ports_data = enumerate_all_usb_ports()
+                
+                # Filter to downstream ports
+                downstream_ports = filter_ports_by_limit(ports_data, monitor_port)
+                
+                # Check for rpiboot-compatible devices that need booting
+                for port_str, port_info in downstream_ports.items():
+                    # Skip the monitor port itself (it's the hub, not a device)
+                    if port_str == monitor_port:
+                        continue
+                    
+                    # Check if this is a rpiboot-compatible device
+                    if not is_rpiboot_device(port_info):
+                        continue
+                    
+                    # Skip if already being booted
+                    if port_str in rpibooting_devices:
+                        continue
+                    
+                    # Skip if already booted successfully
+                    if port_str in rpibooted_ports:
+                        continue
+                    
+                    # Skip if rpiboot previously failed
+                    if port_str in rpiboot_failed_ports:
+                        continue
+                    
+                    # Skip if device already has block devices (already in mass storage mode)
+                    if port_info.get('block_devices'):
+                        continue
+                    
+                    # This device needs rpiboot - start booting it
+                    logger.info(f"Detected rpiboot-compatible device at port {port_str}, starting rpiboot")
+                    rpibooting_devices.add(port_str)
+                    
+                    # Execute rpiboot in background thread
+                    def handle_rpiboot_completion(port: str):
+                        try:
+                            success = boot_rpiboot_device(port, timeout=60.0)
+                            rpibooting_devices.discard(port)
+                            if success:
+                                rpibooted_ports.add(port)
+                                logger.info(f"rpiboot completed successfully for port {port}, device should appear as block device")
+                            else:
+                                rpiboot_failed_ports.add(port)
+                                logger.error(f"rpiboot failed for port {port}, skipping device")
+                        except Exception as e:
+                            logger.error(f"Unexpected error during rpiboot for port {port}: {e}")
+                            rpibooting_devices.discard(port)
+                            rpiboot_failed_ports.add(port)
+                    
+                    # Start rpiboot in background thread
+                    threading.Thread(
+                        target=handle_rpiboot_completion,
+                        args=(port_str,),
+                        daemon=True
+                    ).start()
                 
                 # Get current block devices on downstream ports
                 current_devices = get_downstream_block_devices(ports_data, monitor_port)
@@ -269,30 +390,6 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
                             daemon=True
                         ).start()
                 
-                # Report progress for currently flashing devices (throttled)
-                for device in flashing_devices:
-                    if device in device_progress:
-                        progress = device_progress[device]
-                        if progress.get('status') == 'flashing':
-                            percent = progress.get('percent', 0)
-                            bytes_written = progress.get('bytes_written', 0)
-                            total_bytes = progress.get('total_bytes', 0)
-                            
-                            # Throttle progress logging (log every 5 seconds per device)
-                            should_log = False
-                            if device not in last_progress_log:
-                                should_log = True
-                                last_progress_log[device] = current_time
-                            elif (current_time - last_progress_log[device]) >= progress_log_interval:
-                                should_log = True
-                                last_progress_log[device] = current_time
-                            
-                            if should_log and total_bytes > 0:
-                                logger.info(
-                                    f"{device}: {percent:.1f}% complete "
-                                    f"({bytes_written / (1024*1024):.2f} MB / {total_bytes / (1024*1024):.2f} MB)"
-                                )
-                
                 # Check for removed devices (that were flashed)
                 devices_to_remove = []
                 for device in flashed_devices:
@@ -305,7 +402,6 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
                     flashed_devices.remove(device)
                     device_timestamps.pop(device, None)
                     device_progress.pop(device, None)  # Clean up progress
-                    last_progress_log.pop(device, None)  # Clean up log timing
                 
                 # Clean up timestamps and progress for devices that are no longer present
                 # (but weren't flashed - they may have been removed before flashing)
@@ -313,13 +409,27 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
                     if device not in current_devices and device not in flashing_devices:
                         device_timestamps.pop(device)
                         device_progress.pop(device, None)  # Clean up progress
-                        last_progress_log.pop(device, None)  # Clean up log timing
                 
                 # Clean up progress for completed/failed devices that are no longer being tracked
                 for device in list(device_progress.keys()):
                     if device not in flashing_devices and device not in flashed_devices:
                         device_progress.pop(device)
-                        last_progress_log.pop(device, None)
+                
+                # Clean up rpiboot state for ports that are no longer present
+                # Check all downstream ports to see which ones still exist
+                current_port_strings = set(downstream_ports.keys())
+                for port_str in list(rpibooting_devices):
+                    if port_str not in current_port_strings:
+                        logger.debug(f"rpibooting port {port_str} no longer present, cleaning up")
+                        rpibooting_devices.discard(port_str)
+                for port_str in list(rpibooted_ports):
+                    if port_str not in current_port_strings:
+                        logger.debug(f"rpibooted port {port_str} no longer present, cleaning up")
+                        rpibooted_ports.discard(port_str)
+                for port_str in list(rpiboot_failed_ports):
+                    if port_str not in current_port_strings:
+                        logger.debug(f"rpiboot-failed port {port_str} no longer present, cleaning up")
+                        rpiboot_failed_ports.discard(port_str)
                 
             except Exception as e:
                 logger.error(f"Error during monitoring cycle: {e}", exc_info=True)
@@ -328,16 +438,17 @@ def monitor_devices(monitor_port: str, config: DaemonConfig) -> None:
             time.sleep(poll_interval)
     
     finally:
-        # Shutdown requested - wait for in-progress flashes to complete
-        logger.info("Shutdown requested, waiting for in-progress flashes to complete...")
+        # Shutdown requested - interrupt in-progress flashes
+        if flashing_devices:
+            logger.info(f"Shutdown requested, interrupting {len(flashing_devices)} in-progress flash operation(s)...")
+        else:
+            logger.info("Shutdown requested")
         
         if _flash_executor:
-            # Wait for all flashes to complete
-            # Note: shutdown(wait=True) will wait indefinitely, but we're in a daemon
-            # so we want to wait for completion. If we need timeout, we'd need to
-            # track futures and use as_completed with timeout instead.
-            _flash_executor.shutdown(wait=True)
-            logger.info("All flash operations completed")
+            # Shutdown executor without waiting - this prevents new tasks and
+            # allows the daemon to exit immediately. Running flash operations
+            # will be interrupted when the process exits (they're daemon threads).
+            _flash_executor.shutdown(wait=False)
         
         # Clean up memory-mapped image
         cleanup_image_mmap()
