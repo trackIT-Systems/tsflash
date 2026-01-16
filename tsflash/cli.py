@@ -7,6 +7,7 @@ import sys
 from . import __version__
 from .flash import flash_image
 from .validators import validate_image_file, validate_block_device
+from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -69,6 +70,49 @@ def cmd_flash(args):
         return 1
 
 
+def cmd_usb(args):
+    """Handle the usb command."""
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Enumerate all USB ports
+        logger.debug("Enumerating USB ports...")
+        ports_data = enumerate_all_usb_ports()
+        
+        # Determine which ports to show
+        if args.all:
+            # Show all ports
+            logger.debug("Showing all USB ports")
+        elif args.port:
+            # Use specified port
+            logger.debug(f"Limiting output to port and downstream ports: {args.port}")
+            ports_data = filter_ports_by_limit(ports_data, args.port)
+            if not ports_data:
+                logger.warning(f"No ports found matching port '{args.port}'")
+                return 1
+        else:
+            # Default: find first hub and limit to it
+            first_hub = find_first_usb_hub(ports_data)
+            if first_hub:
+                logger.debug(f"Limiting output to first hub: {first_hub}")
+                ports_data = filter_ports_by_limit(ports_data, first_hub)
+            else:
+                # No hub found, show all ports
+                logger.debug("No USB hub found, showing all ports")
+        
+        # Format and print output
+        output = format_usb_output(ports_data, json_output=args.json)
+        print(output)
+        
+        return 0
+    except RuntimeError as e:
+        logger.error(f"USB enumeration error: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return 1
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -115,6 +159,27 @@ def main():
         help='Block size for reading/writing (default: 4M). Examples: 4M, 1M, 512K'
     )
     
+    # USB subcommand
+    usb_parser = subparsers.add_parser(
+        'usb',
+        help='List USB ports and connected devices (default: first hub and downstream ports)'
+    )
+    usb_parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Output in JSON format'
+    )
+    usb_parser.add_argument(
+        '--all',
+        action='store_true',
+        help='Show all USB ports (default: show only first hub and downstream ports)'
+    )
+    usb_parser.add_argument(
+        '--port',
+        metavar='PORT',
+        help='Limit output to a specific port and downstream ports (e.g., 1-2)'
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -124,6 +189,8 @@ def main():
     # Handle commands
     if args.command == 'flash':
         return cmd_flash(args)
+    elif args.command == 'usb':
+        return cmd_usb(args)
     else:
         parser.print_help()
         return 1
