@@ -24,6 +24,7 @@ Simply run `tsflash` (without arguments) to launch the TUI mode.
 - **Interactive TUI** - Default mode with real-time monitoring and progress visualization
 - **CLI Commands** - Manual control with `flash`, `usb`, `daemon`, and `rpiboot` subcommands
 - **Automatic Device Detection** - Monitors USB hubs and automatically flashes connected devices
+- **USB 2.0/3.0 Dual-Mode Hub Support** - Automatically detects and merges USB 2.0/3.0 port pairs, ensuring each physical port appears exactly once
 - **Raspberry Pi rpiboot Support** - Boot Raspberry Pi devices into mass storage mode for flashing
 - **Parallel Flashing** - Flash multiple devices simultaneously using memory-mapped images
 - **Efficient I/O** - Uses memory-mapped files for fast, parallel access to image files
@@ -152,6 +153,22 @@ tsflash rpiboot [-p 1-2.3] [--verbose]
 ```
 
 This is useful for flashing Raspberry Pi devices that don't have an SD card inserted.
+
+## USB 2.0/3.0 Dual-Mode Hub Support
+
+USB 3.0 hubs present themselves to the Linux kernel as two separate hubs on different buses:
+- A USB 2.0 hub on one bus (e.g., `3-1` on bus 3)
+- A USB 3.0 hub on another bus (e.g., `4-1` on bus 4)
+
+Devices that support USB 3.0 connect to the USB 3.0 bus, while USB 2.0-only devices connect to the USB 2.0 bus. tsflash automatically detects related USB 2.0/3.0 hub pairs and merges them into a unified port representation.
+
+**Key Benefits:**
+- Each physical port appears exactly once in `tsflash usb` output and the TUI
+- Devices connected via USB 3.0 are automatically detected and shown on the unified port
+- Devices connected via USB 2.0 are also detected and shown on the unified port
+- Block devices from both buses are combined in the unified port entry
+
+tsflash identifies related hubs by matching vendor IDs and port numbers on consecutive buses. The unified port uses the USB 2.0 port string as the canonical identifier (e.g., `3-1.4`) and merges device information from both buses, preferring USB 3.0 device information when available.
 
 ## Configuration
 
