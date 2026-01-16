@@ -9,6 +9,7 @@ from .flash import flash_image, create_image_mmap
 from .validators import validate_image_file, validate_block_device
 from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
 from .daemon import run_daemon
+from .rpiboot import run_rpiboot
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -135,6 +136,12 @@ def cmd_daemon(args):
     return run_daemon(args.config)
 
 
+def cmd_rpiboot(args):
+    """Handle the rpiboot command."""
+    success, exit_code = run_rpiboot(port=args.port, verbose=args.verbose)
+    return exit_code
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -218,6 +225,17 @@ def main():
         help='Path to configuration file (default: /boot/firmware/tsflash.yml)'
     )
     
+    # rpiboot subcommand
+    rpiboot_parser = subparsers.add_parser(
+        'rpiboot',
+        help='Boot a Raspberry Pi into mass storage device mode for flashing'
+    )
+    rpiboot_parser.add_argument(
+        '-p', '--port',
+        metavar='PORT',
+        help='USB port pathname to target (e.g., 1-2.3)'
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -231,6 +249,8 @@ def main():
         return cmd_usb(args)
     elif args.command == 'daemon':
         return cmd_daemon(args)
+    elif args.command == 'rpiboot':
+        return cmd_rpiboot(args)
     else:
         parser.print_help()
         return 1
