@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import subprocess
 import sys
 
 from . import __version__
@@ -33,6 +34,60 @@ def setup_logging(verbose=False, quiet=False):
         format='%(levelname)s: %(message)s',
         stream=sys.stderr
     )
+
+
+def is_devmon_running():
+    """
+    Check if devmon process is running.
+    
+    Returns:
+        bool: True if devmon is running, False otherwise
+    """
+    try:
+        # Use pgrep to check if devmon is running
+        result = subprocess.run(
+            ['pgrep', '-x', 'devmon'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        # If pgrep is not available, try using ps
+        try:
+            result = subprocess.run(
+                ['ps', '-C', 'devmon'],
+                capture_output=True,
+                text=True,
+                check=False
+            )
+            return result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # If both fail, assume devmon is not running
+            return False
+
+
+def check_devmon_and_exit():
+    """
+    Check if devmon is running and exit with error if it is.
+    
+    Returns:
+        int: Exit code (1 if devmon is running, 0 otherwise)
+    """
+    if is_devmon_running():
+        logger = logging.getLogger(__name__)
+        logger.error("devmon is currently running.")
+        logger.error("")
+        logger.error("devmon automatically mounts devices, which interferes with tsflash:")
+        logger.error("  - Devices cannot be flashed while mounted")
+        logger.error("  - devmon may re-mount devices during flash operations")
+        logger.error("  - Newly flashed cards may be mounted before completion")
+        logger.error("")
+        logger.error("Please stop devmon before running tsflash:")
+        logger.error("")
+        logger.error("  sudo systemctl stop devmon")
+        return 1
+    return 0
 
 
 def cmd_flash(args):
@@ -125,6 +180,11 @@ def cmd_usb(args):
 
 def cmd_daemon(args):
     """Handle the daemon command."""
+    # Check if devmon is running
+    exit_code = check_devmon_and_exit()
+    if exit_code != 0:
+        return exit_code
+    
     # The daemon module handles its own logging setup, but we can override
     # with CLI flags if specified
     if args.verbose or args.quiet:
@@ -141,6 +201,30 @@ def cmd_rpiboot(args):
     """Handle the rpiboot command."""
     success, exit_code = run_rpiboot(port=args.port, verbose=args.verbose)
     return exit_code
+
+
+def cmd_tui(args):
+    """Handle the tui command."""
+    # Check if devmon is running
+    exit_code = check_devmon_and_exit()
+    if exit_code != 0:
+        return exit_code
+    
+    # Derive log level from verbose/quiet flags
+    if args.verbose:
+        log_level = 'DEBUG'
+    elif args.quiet:
+        log_level = 'WARNING'
+    else:
+        log_level = 'INFO'
+    
+    return run_tui(
+        image_path=args.image_path,
+        port=args.port,
+        block_size=args.block_size,
+        stable_delay=args.stable_delay,
+        log_level=log_level
+    )
 
 
 def main():
@@ -167,32 +251,8 @@ def main():
         version=f'tsflash {__version__}'
     )
     
-    # TUI-specific arguments (used when no subcommand is provided)
-    parser.add_argument(
-        'image_path',
-        nargs='?',
-        metavar='IMAGE-PATH',
-        help='Path to the image file to flash (required for TUI mode)'
-    )
-    parser.add_argument(
-        '--port',
-        metavar='PORT',
-        help='USB port to monitor (e.g., "1-2"). Auto-detects first hub if not specified'
-    )
-    parser.add_argument(
-        '--block-size',
-        default='4M',
-        help='Block size for flashing (default: 4M). Examples: 4M, 1M, 512K'
-    )
-    parser.add_argument(
-        '--stable-delay',
-        type=float,
-        default=3.0,
-        help='Seconds to wait after device appears before flashing (default: 3)'
-    )
-    
     # Subcommands
-    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    subparsers = parser.add_subparsers(dest='command', help='Available commands', required=False)
     
     # Flash subcommand
     flash_parser = subparsers.add_parser(
@@ -262,6 +322,33 @@ def main():
         help='USB port pathname to target (e.g., 1-2.3)'
     )
     
+    # TUI subcommand
+    tui_parser = subparsers.add_parser(
+        'tui',
+        help='Run the TUI (Text User Interface) for interactive flashing'
+    )
+    tui_parser.add_argument(
+        'image_path',
+        metavar='IMAGE-PATH',
+        help='Path to the image file to flash'
+    )
+    tui_parser.add_argument(
+        '--port',
+        metavar='PORT',
+        help='USB port to monitor (e.g., "1-2"). Auto-detects first hub if not specified'
+    )
+    tui_parser.add_argument(
+        '--block-size',
+        default='4M',
+        help='Block size for flashing (default: 4M). Examples: 4M, 1M, 512K'
+    )
+    tui_parser.add_argument(
+        '--stable-delay',
+        type=float,
+        default=3.0,
+        help='Seconds to wait after device appears before flashing (default: 3)'
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -277,26 +364,11 @@ def main():
         return cmd_daemon(args)
     elif args.command == 'rpiboot':
         return cmd_rpiboot(args)
+    elif args.command == 'tui':
+        return cmd_tui(args)
     else:
-        # No command provided - run TUI
-        if not args.image_path:
-            parser.error("IMAGE-PATH is required when running TUI mode (no subcommand provided)")
-        
-        # Derive log level from verbose/quiet flags
-        if args.verbose:
-            log_level = 'DEBUG'
-        elif args.quiet:
-            log_level = 'WARNING'
-        else:
-            log_level = 'INFO'
-        
-        return run_tui(
-            image_path=args.image_path,
-            port=args.port,
-            block_size=args.block_size,
-            stable_delay=args.stable_delay,
-            log_level=log_level
-        )
+        # No command provided
+        parser.error("A command is required. Use 'tui', 'flash', 'usb', 'daemon', or 'rpiboot'.")
 
 
 if __name__ == '__main__':
