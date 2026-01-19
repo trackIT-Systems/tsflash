@@ -121,10 +121,10 @@ def _create_ports_table(port_states: Dict[str, dict], ports_data: Dict, monitor_
         title=title,
         title_style="bold yellow"
     )
-    table.add_column("Port", style="cyan", no_wrap=True, ratio=1)
-    table.add_column("State", style="bold", ratio=1)
+    table.add_column("Port", style="cyan", no_wrap=True)
+    table.add_column("State", style="bold")
     table.add_column("Progress", ratio=2)
-    table.add_column("Device", style="yellow", ratio=1)
+    table.add_column("Device", style="yellow")
     table.add_column("Info", style="dim", ratio=3, no_wrap=True)
     
     # Get all downstream ports (excluding the monitor port itself)
@@ -656,7 +656,7 @@ def run_tui(
                 keyboard_fd = None
         
         try:
-            with Live(console=console, screen=True, refresh_per_second=2) as live:
+            with Live(console=console, screen=True, refresh_per_second=10) as live:
                 while not _tui_shutdown_requested:
                     # Check for 'q' key press (non-blocking)
                     if keyboard_fd is not None:
@@ -686,7 +686,7 @@ def run_tui(
                     if not monitor_thread.is_alive():
                         break
                     
-                    time.sleep(0.5)  # Update every 0.5 seconds
+                    time.sleep(0.1)  # Update every 0.1 seconds
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
         finally:
