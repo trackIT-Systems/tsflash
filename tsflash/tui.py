@@ -1,10 +1,13 @@
 """Text-based UI for monitoring tsflash daemon operations."""
 
 import logging
+import select
 import signal
 import sys
+import termios
 import threading
 import time
+import tty
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Deque, Dict, Optional
@@ -639,9 +642,36 @@ def run_tui(
         # Create console and run live display
         console = Console()
         
+        # Setup keyboard input handling - only if stdin is a TTY
+        keyboard_fd = None
+        old_term_settings = None
+        if sys.stdin.isatty():
+            try:
+                keyboard_fd = sys.stdin.fileno()
+                old_term_settings = termios.tcgetattr(keyboard_fd)
+                # Use setcbreak - less invasive than setraw
+                tty.setcbreak(keyboard_fd)
+            except (termios.error, OSError) as e:
+                logger.debug(f"Could not setup keyboard input: {e}")
+                keyboard_fd = None
+        
         try:
             with Live(console=console, screen=True, refresh_per_second=2) as live:
                 while not _tui_shutdown_requested:
+                    # Check for 'q' key press (non-blocking)
+                    if keyboard_fd is not None:
+                        try:
+                            rlist, _, _ = select.select([keyboard_fd], [], [], 0)
+                            if rlist:
+                                char = sys.stdin.read(1)
+                                if char and char.lower() == 'q':
+                                    logger.info("Quit key ('q') pressed, initiating graceful shutdown...")
+                                    _tui_shutdown_requested = True
+                                    break
+                        except Exception:
+                            # Ignore keyboard read errors
+                            pass
+                    
                     # Get current ports data for display
                     try:
                         ports_data = enumerate_all_usb_ports()
@@ -660,6 +690,13 @@ def run_tui(
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
         finally:
+            # Restore terminal settings if we modified them
+            if keyboard_fd is not None and old_term_settings is not None:
+                try:
+                    termios.tcsetattr(keyboard_fd, termios.TCSADRAIN, old_term_settings)
+                except Exception:
+                    pass
+            
             _tui_shutdown_requested = True
             # Wait a bit for cleanup
             monitor_thread.join(timeout=2.0)
