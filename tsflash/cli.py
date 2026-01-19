@@ -84,7 +84,6 @@ def check_devmon_and_exit():
         logger.error("  - Newly flashed cards may be mounted before completion")
         logger.error("")
         logger.error("Please stop devmon before running tsflash:")
-        logger.error("")
         logger.error("  sudo systemctl stop devmon")
         return 1
     return 0

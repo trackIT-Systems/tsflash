@@ -120,9 +120,9 @@ def _create_ports_table(port_states: Dict[str, dict], ports_data: Dict, monitor_
     )
     table.add_column("Port", style="cyan", no_wrap=True, ratio=1)
     table.add_column("State", style="bold", ratio=1)
-    table.add_column("Progress", ratio=3)
+    table.add_column("Progress", ratio=2)
     table.add_column("Device", style="yellow", ratio=1)
-    table.add_column("Info", style="dim", ratio=2)
+    table.add_column("Info", style="dim", ratio=3, no_wrap=True)
     
     # Get all downstream ports (excluding the monitor port itself)
     if monitor_port:
@@ -210,7 +210,7 @@ def _create_ports_table(port_states: Dict[str, dict], ports_data: Dict, monitor_
         elif state == FAILED:
             error = port_state.get('error', 'Unknown error')
             progress_str = f"[red]✗ Failed[/red]"
-            info_text = error[:40] + "..." if len(error) > 40 else error
+            info_text = error
         else:
             progress_str = ""
             info_text = ""
