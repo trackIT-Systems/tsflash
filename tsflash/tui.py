@@ -15,7 +15,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table, box
 
-from .config import DaemonConfig, load_config
+from .config import DaemonConfig
 from .daemon import (
     COMPLETED,
     FAILED,
@@ -525,12 +525,22 @@ def _monitor_devices_tui(monitor_port: str, config: DaemonConfig) -> None:
             _tui_image_mmap = None
 
 
-def run_tui(config_path: Optional[str] = None) -> int:
+def run_tui(
+    image_path: str,
+    port: Optional[str] = None,
+    block_size: str = "4M",
+    stable_delay: float = 3.0,
+    log_level: str = "INFO"
+) -> int:
     """
     Run the text-based UI for monitoring tsflash operations.
     
     Args:
-        config_path: Path to config file (optional)
+        image_path: Path to the image file to flash (required)
+        port: USB port to monitor (optional, e.g., "1-2")
+        block_size: Block size for flashing (default: "4M")
+        stable_delay: Seconds to wait after device appears before flashing (default: 3.0)
+        log_level: Logging level (default: "INFO")
         
     Returns:
         Exit code (0 for success, non-zero for error)
@@ -538,8 +548,15 @@ def run_tui(config_path: Optional[str] = None) -> int:
     global _tui_shutdown_requested, _tui_image_mmap, _tui_flash_executor
     
     try:
-        # Load configuration
-        config = load_config(config_path)
+        # Create configuration from provided parameters
+        config_dict = {
+            'image_path': image_path,
+            'port': port,
+            'block_size': block_size,
+            'stable_delay': stable_delay,
+            'log_level': log_level
+        }
+        config = DaemonConfig(config_dict)
         
         # Setup logging with TUI handler only (disable stdout/stderr)
         # Remove all existing handlers to prevent stdout/stderr output
@@ -661,9 +678,6 @@ def run_tui(config_path: Optional[str] = None) -> int:
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         return 0
-    except FileNotFoundError as e:
-        logger.error(f"Configuration error: {e}")
-        return 1
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
         return 1

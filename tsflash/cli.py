@@ -40,8 +40,8 @@ def cmd_flash(args):
     logger = logging.getLogger(__name__)
     
     # Validate image file
-    logger.debug(f"Validating image file: {args.file}")
-    is_valid, error_msg = validate_image_file(args.file)
+    logger.debug(f"Validating image file: {args.image_path}")
+    is_valid, error_msg = validate_image_file(args.image_path)
     if not is_valid:
         logger.error(error_msg)
         return 1
@@ -57,12 +57,12 @@ def cmd_flash(args):
     mapped_image = None
     try:
         # Create memory-mapped image for efficient access
-        logger.debug(f"Creating memory-mapped image: {args.file}")
-        mapped_image = create_image_mmap(args.file)
+        logger.debug(f"Creating memory-mapped image: {args.image_path}")
+        mapped_image = create_image_mmap(args.image_path)
         
         # Flash using mmap
         flash_image(mapped_image, args.target, args.block_size, 
-                   non_interactive=args.non_interactive, image_path=args.file)
+                   non_interactive=args.non_interactive, image_path=args.image_path)
         logger.info("Flash operation completed successfully")
         return 0
     except ValueError as e:
@@ -166,10 +166,29 @@ def main():
         action='version',
         version=f'tsflash {__version__}'
     )
+    
+    # TUI-specific arguments (used when no subcommand is provided)
     parser.add_argument(
-        '--config',
-        metavar='PATH',
-        help='Path to configuration file (for TUI mode, default: /boot/firmware/tsflash.yml)'
+        'image_path',
+        nargs='?',
+        metavar='IMAGE-PATH',
+        help='Path to the image file to flash (required for TUI mode)'
+    )
+    parser.add_argument(
+        '--port',
+        metavar='PORT',
+        help='USB port to monitor (e.g., "1-2"). Auto-detects first hub if not specified'
+    )
+    parser.add_argument(
+        '--block-size',
+        default='4M',
+        help='Block size for flashing (default: 4M). Examples: 4M, 1M, 512K'
+    )
+    parser.add_argument(
+        '--stable-delay',
+        type=float,
+        default=3.0,
+        help='Seconds to wait after device appears before flashing (default: 3)'
     )
     
     # Subcommands
@@ -181,7 +200,8 @@ def main():
         help='Flash an OS image to a block device'
     )
     flash_parser.add_argument(
-        'file',
+        'image_path',
+        metavar='IMAGE-PATH',
         help='Path to the OS image file (.img or .iso)'
     )
     flash_parser.add_argument(
@@ -259,7 +279,24 @@ def main():
         return cmd_rpiboot(args)
     else:
         # No command provided - run TUI
-        return run_tui(args.config)
+        if not args.image_path:
+            parser.error("IMAGE-PATH is required when running TUI mode (no subcommand provided)")
+        
+        # Derive log level from verbose/quiet flags
+        if args.verbose:
+            log_level = 'DEBUG'
+        elif args.quiet:
+            log_level = 'WARNING'
+        else:
+            log_level = 'INFO'
+        
+        return run_tui(
+            image_path=args.image_path,
+            port=args.port,
+            block_size=args.block_size,
+            stable_delay=args.stable_delay,
+            log_level=log_level
+        )
 
 
 if __name__ == '__main__':
