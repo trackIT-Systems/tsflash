@@ -37,6 +37,10 @@ class MappedImage:
 logger = logging.getLogger(__name__)
 
 
+class FlashAborted(Exception):
+    """Raised when a flash operation is cancelled via its cancel_event."""
+
+
 def parse_block_size(block_size_str):
     """
     Parse block size string (e.g., "4M", "1M", "512K") to bytes.
@@ -69,18 +73,17 @@ def parse_block_size(block_size_str):
             unit = u
             break
     
-    if unit is None:
-        # Assume bytes if no unit
-        return int(block_size_str)
-    
-    # Extract number
-    number_str = block_size_str[:-len(unit)]
+    # Extract number (no unit means bytes)
+    number_str = block_size_str[:-len(unit)] if unit else block_size_str
     try:
         number = int(number_str)
     except ValueError:
         raise ValueError(f"Invalid block size format: {block_size_str}")
     
-    return number * multipliers[unit]
+    size = number * (multipliers[unit] if unit else 1)
+    if size <= 0:
+        raise ValueError(f"Block size must be positive: {block_size_str}")
+    return size
 
 
 def create_image_mmap(image_path: str) -> MappedImage:
@@ -166,7 +169,8 @@ def unmount_device(device):
 
 
 def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str, block_size: str = '4M', 
-                non_interactive: bool = False, image_path: str = None, progress_callback=None):
+                non_interactive: bool = False, image_path: str = None, progress_callback=None,
+                cancel_event=None):
     """
     Flash an image file to a block device using pure Python.
     
@@ -177,11 +181,14 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         non_interactive: If True, use logging instead of progress bar (default: False)
         image_path: Optional path string for logging
         progress_callback: Optional callback function(bytes_written, total_bytes, percent) for progress updates
+        cancel_event: Optional threading.Event; when set, flashing stops before the next
+                      chunk and FlashAborted is raised (the device is left incomplete)
         
     Raises:
         IOError: If there's an I/O error during flashing
         PermissionError: If there are permission issues
         ValueError: If block_size format is invalid
+        FlashAborted: If cancel_event was set during flashing
     """
     # Parse block size
     try:
@@ -210,12 +217,11 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
     device_file = None
     
     try:
-        # Open block device for writing
-        
-        # Open block device for writing
+        # Open block device for writing (unbuffered; data is fsync'ed at the end).
+        # No O_CREAT/O_TRUNC: if the device vanished, open('wb') would silently
+        # create a regular file of that name (e.g. in /dev) instead of failing.
         try:
-            # Use O_SYNC flag for synchronous writes to ensure data integrity
-            device_file = open(target_device, 'wb', buffering=0)
+            device_file = open(os.open(target_device, os.O_WRONLY), 'wb', buffering=0)
             logger.debug(f"Opened block device: {target_device}")
         except PermissionError as e:
             raise PermissionError(
@@ -224,85 +230,86 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         except IOError as e:
             raise IOError(f"Cannot open block device: {e}")
         
+        # Refuse to write an image that does not fit on the target device.
+        # (Seeking to the end of a block device yields its size on Linux; on
+        # macOS raw devices this may return 0, in which case we skip the check.)
+        try:
+            device_size = os.lseek(device_file.fileno(), 0, os.SEEK_END)
+            os.lseek(device_file.fileno(), 0, os.SEEK_SET)
+        except OSError:
+            device_size = 0
+        if device_size and file_size > device_size:
+            raise IOError(
+                f"Image ({file_size} bytes) is larger than target device "
+                f"{target_device} ({device_size} bytes)"
+            )
+        
         bytes_written = 0
         log_interval = 5.0  # Log progress every 5 seconds in non-interactive mode
         
         if non_interactive:
             logger.info(f"Writing {file_size} bytes ({file_size / (1024*1024):.2f} MB) to {target_device}")
             last_log_time = time.time()  # Initialize for first progress log
+            pbar = None
         else:
-            last_log_time = None
+            # Interactive mode: use progress bar
+            pbar = tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024)
         
-        # Use progress bar in interactive mode, or simple loop in non-interactive mode
-        # Memory-mapped file: use slicing
-        if non_interactive:
-            # Non-interactive mode: log periodic updates
+        try:
             offset = 0
             while offset < file_size:
-                end_offset = min(offset + chunk_size, file_size)
-                chunk = image_mmap[offset:end_offset]
+                if cancel_event is not None and cancel_event.is_set():
+                    raise FlashAborted(
+                        f"Flashing {target_device} aborted after {bytes_written} bytes"
+                    )
                 
-                if not chunk:
-                    break
+                end_offset = min(offset + chunk_size, file_size)
+                chunk = memoryview(image_mmap[offset:end_offset])
                 
                 try:
-                    device_file.write(chunk)
-                    bytes_written += len(chunk)
-                    offset += len(chunk)
-                    
-                    # Calculate progress
-                    percent = (bytes_written / file_size * 100) if file_size > 0 else 0
-                    
-                    # Call progress callback if provided
-                    if progress_callback:
-                        try:
-                            progress_callback(bytes_written, file_size, percent)
-                        except Exception as e:
-                            logger.debug(f"Error in progress callback: {e}")
-                    
+                    # Unbuffered (raw) writes may be short - loop until the
+                    # whole chunk has been written.
+                    chunk_written = 0
+                    while chunk_written < len(chunk):
+                        n = device_file.write(chunk[chunk_written:])
+                        if not n:
+                            raise IOError(
+                                f"Short write at offset {offset + chunk_written} "
+                                f"(device full or removed?)"
+                            )
+                        chunk_written += n
+                except PermissionError as e:
+                    raise PermissionError(f"Permission denied writing to device: {e}")
+                except IOError as e:
+                    raise IOError(f"Error writing to device: {e}")
+                
+                bytes_written += chunk_written
+                offset += chunk_written
+                
+                # Calculate progress
+                percent = (bytes_written / file_size * 100) if file_size > 0 else 0
+                
+                # Call progress callback if provided
+                if progress_callback:
+                    try:
+                        progress_callback(bytes_written, file_size, percent)
+                    except Exception as e:
+                        logger.debug(f"Error in progress callback: {e}")
+                
+                if pbar is not None:
+                    pbar.update(chunk_written)
+                else:
                     # Log progress periodically
                     current_time = time.time()
-                    if last_log_time is None or (current_time - last_log_time) >= log_interval:
+                    if (current_time - last_log_time) >= log_interval:
                         logger.info(
                             f"{target_device}: Progress: {bytes_written / (1024*1024):.2f} MB / "
                             f"{file_size / (1024*1024):.2f} MB ({percent:.1f}%)"
                         )
                         last_log_time = current_time
-                except IOError as e:
-                    raise IOError(f"Error writing to device: {e}")
-                except PermissionError as e:
-                    raise PermissionError(f"Permission denied writing to device: {e}")
-        else:
-            # Interactive mode: use progress bar
-            with tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024) as pbar:
-                offset = 0
-                while offset < file_size:
-                    end_offset = min(offset + chunk_size, file_size)
-                    chunk = image_mmap[offset:end_offset]
-                    
-                    if not chunk:
-                        break
-                    
-                    try:
-                        device_file.write(chunk)
-                        bytes_written += len(chunk)
-                        offset += len(chunk)
-                        
-                        # Calculate progress
-                        percent = (bytes_written / file_size * 100) if file_size > 0 else 0
-                        
-                        # Call progress callback if provided
-                        if progress_callback:
-                            try:
-                                progress_callback(target_device, bytes_written, file_size, percent)
-                            except Exception as e:
-                                logger.debug(f"Error in progress callback: {e}")
-                        
-                        pbar.update(len(chunk))
-                    except IOError as e:
-                        raise IOError(f"Error writing to device: {e}")
-                    except PermissionError as e:
-                        raise PermissionError(f"Permission denied writing to device: {e}")
+        finally:
+            if pbar is not None:
+                pbar.close()
         
         # Sync to ensure all data is written to disk
         logger.info("Syncing data to disk...")

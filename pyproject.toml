@@ -13,9 +13,17 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0",
+]
+
 [project.scripts]
 tsflash = "tsflash.cli:main"
 tsflashd = "tsflash.daemon:main"
 
 [tool.setuptools]
 packages = ["tsflash"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
