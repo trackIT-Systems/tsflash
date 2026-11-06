@@ -7,7 +7,15 @@ import logging
 import time
 import mmap
 from typing import Union
-from tqdm import tqdm
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 
 
 class MappedImage:
@@ -250,10 +258,19 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         if non_interactive:
             logger.info(f"Writing {file_size} bytes ({file_size / (1024*1024):.2f} MB) to {target_device}")
             last_log_time = time.time()  # Initialize for first progress log
-            pbar = None
+            progress = None
         else:
-            # Interactive mode: use progress bar
-            pbar = tqdm(total=file_size, unit='B', unit_scale=True, unit_divisor=1024)
+            # Interactive mode: progress bar on stderr
+            progress = Progress(
+                TextColumn("{task.description}"),
+                BarColumn(),
+                DownloadColumn(binary_units=True),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=Console(stderr=True),
+            )
+            progress_task = progress.add_task(target_device, total=file_size)
+            progress.start()
         
         try:
             offset = 0
@@ -296,8 +313,8 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                     except Exception as e:
                         logger.debug(f"Error in progress callback: {e}")
                 
-                if pbar is not None:
-                    pbar.update(chunk_written)
+                if progress is not None:
+                    progress.update(progress_task, advance=chunk_written)
                 else:
                     # Log progress periodically
                     current_time = time.time()
@@ -308,8 +325,8 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                         )
                         last_log_time = current_time
         finally:
-            if pbar is not None:
-                pbar.close()
+            if progress is not None:
+                progress.stop()
         
         # Sync to ensure all data is written to disk
         logger.info("Syncing data to disk...")

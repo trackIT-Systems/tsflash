@@ -36,7 +36,7 @@ tsflash requires Python 3.11 or higher.
 
 Install dependencies:
 ```bash
-pip install tqdm pyyaml rich
+pip install pyyaml rich
 ```
 
 Or install the package:
@@ -218,7 +218,6 @@ Configuration (daemon only) is stored in a YAML file (default: `/boot/firmware/t
 ## Requirements
 
 - Python 3.11+
-- tqdm >= 4.64.0
 - pyyaml >= 6.0
 - rich >= 13.0.0
 
