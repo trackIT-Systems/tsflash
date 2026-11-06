@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Path to USB sysfs
 USB_SYSFS_PATH = Path("/sys/bus/usb/devices")
+SYSFS_CLASS_BLOCK = Path("/sys/class/block")
 
 
 def _read_file_safe(path, default=None):
@@ -29,6 +30,25 @@ def _read_file_safe(path, default=None):
     except (IOError, OSError, PermissionError) as e:
         logger.debug(f"Could not read {path}: {e}")
     return default
+
+
+def block_device_size(device):
+    """
+    Get the size of a block device in bytes from sysfs.
+
+    A size of 0 typically means "no medium", e.g. a USB card reader without a card.
+
+    Args:
+        device: Block device path (e.g., "/dev/sda")
+
+    Returns:
+        int: Size in bytes, or None if it cannot be determined
+    """
+    size_str = _read_file_safe(SYSFS_CLASS_BLOCK / os.path.basename(device) / "size")
+    try:
+        return int(size_str) * 512  # sysfs reports 512-byte sectors
+    except (TypeError, ValueError):
+        return None
 
 
 def _get_maxchild(device_path):

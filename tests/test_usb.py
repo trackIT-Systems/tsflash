@@ -1,4 +1,5 @@
-from tsflash.usb import unify_ports
+from tsflash import usb
+from tsflash.usb import block_device_size, unify_ports
 
 
 def port(vendor=None, block_devices=()):
@@ -25,3 +26,15 @@ def test_unify_ports_keeps_usb3_port_without_usb2_counterpart():
     unified = unify_ports(raw)
     assert "2-1.5" in unified
     assert unified["2-1.5"]["block_devices"] == ["/dev/sdb"]
+
+
+def test_block_device_size(tmp_path, monkeypatch):
+    (tmp_path / "sda").mkdir()
+    (tmp_path / "sda" / "size").write_text("2048\n")
+    (tmp_path / "sdb").mkdir()
+    (tmp_path / "sdb" / "size").write_text("0\n")
+    monkeypatch.setattr(usb, "SYSFS_CLASS_BLOCK", tmp_path)
+
+    assert block_device_size("/dev/sda") == 2048 * 512
+    assert block_device_size("/dev/sdb") == 0
+    assert block_device_size("/dev/sdc") is None
