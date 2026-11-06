@@ -32,7 +32,7 @@ Run `tsflash tui <image>` to launch the TUI.
 
 ## Installation
 
-tsflash requires Python 3.7 or higher.
+tsflash requires Python 3.11 or higher.
 
 Install dependencies:
 ```bash
@@ -217,7 +217,7 @@ Configuration (daemon only) is stored in a YAML file (default: `/boot/firmware/t
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.11+
 - tqdm >= 4.64.0
 - pyyaml >= 6.0
 - rich >= 13.0.0
