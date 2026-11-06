@@ -478,7 +478,9 @@ def unify_ports(raw_ports):
         if bus_num % 2 == 0:
             # Check if this port has a USB 2.0 counterpart
             usb2_port = _find_usb2_counterpart(port_str, hub_relations)
-            if usb2_port:
+            # Only skip if the counterpart actually exists and will absorb this
+            # port - otherwise the USB 3.0 port would silently disappear
+            if usb2_port and usb2_port in raw_ports:
                 processed_usb3_ports.add(port_str)
                 continue
         
