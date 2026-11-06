@@ -6,7 +6,7 @@ tsflash is a powerful Python tool for flashing OS images to SD cards and other b
 
 ## TUI - Interactive Monitoring
 
-The default mode provides a beautiful terminal-based interface for monitoring USB ports and automatically flashing connected devices:
+The `tui` command provides a terminal-based interface for monitoring USB ports and automatically flashing connected devices:
 
 ![tsflash TUI](tsflash_action.png)
 
@@ -17,12 +17,13 @@ The TUI displays:
 - **Parallel flashing** - Flash multiple devices simultaneously
 - **Log panel** - View detailed operation logs in real-time
 
-Simply run `tsflash` (without arguments) to launch the TUI mode.
+Run `tsflash tui <image>` to launch the TUI.
 
 ## Features
 
-- **Interactive TUI** - Default mode with real-time monitoring and progress visualization
+- **Interactive TUI** - Real-time monitoring and progress visualization (`tsflash tui`)
 - **CLI Commands** - Manual control with `flash`, `usb`, `daemon`, and `rpiboot` subcommands
+- **Safety** - Never flashes the disk the running system boots from
 - **Automatic Device Detection** - Monitors USB hubs and automatically flashes connected devices
 - **USB 2.0/3.0 Dual-Mode Hub Support** - Automatically detects and merges USB 2.0/3.0 port pairs, ensuring each physical port appears exactly once
 - **Raspberry Pi rpiboot Support** - Boot Raspberry Pi devices into mass storage mode for flashing
@@ -45,19 +46,18 @@ pip install .
 
 ## Quick Start
 
-### TUI Mode (Default)
+### TUI Mode
 
-The simplest way to use tsflash is to run it without arguments, which launches the interactive TUI:
+Launch the interactive TUI with the image to flash:
 
 ```bash
-tsflash
+sudo tsflash tui /path/to/image.img
 ```
 
 The TUI will:
-1. Load configuration from `/boot/firmware/tsflash.yml` (or specify with `--config`)
-2. Auto-detect the first USB hub to monitor
-3. Display all downstream ports in real-time
-4. Automatically flash devices as they're connected
+1. Auto-detect the first USB hub to monitor (or use `--port`)
+2. Display all downstream ports in real-time
+3. Automatically flash devices as they're connected
 
 ### Manual Flash Command
 
@@ -67,9 +67,9 @@ Flash an image to a specific device:
 sudo tsflash flash /path/to/image.img /dev/sda
 ```
 
-### Configuration
+### Daemon Configuration
 
-Create a configuration file at `/boot/firmware/tsflash.yml` (or use `tsflash.example.yml` as a template):
+The daemon (`tsflashd` / `tsflash daemon`) reads its settings from a configuration file at `/boot/firmware/tsflash.yml` (use `tsflash.example.yml` as a template). The TUI does not use this file; it takes its settings as command line options.
 
 ```yaml
 # Path to the image file to flash
@@ -92,19 +92,35 @@ log_level: INFO
 
 ### TUI Mode
 
-Run without arguments to launch the interactive TUI:
-
 ```bash
-tsflash [--config /path/to/config.yml]
+tsflash [-v | -q] tui <image_file> [--port 1-2] [--block-size 4M] [--stable-delay 3]
 ```
+
+- `--port` - USB hub port to monitor (default: first hub found)
+- `--block-size` - Block size for writing (default: 4M)
+- `--stable-delay` - Seconds to wait after a device appears before flashing (default: 3)
+- `-v` / `-q` - Debug / warning log level (global options, placed before `tui`)
 
 The TUI automatically:
 - Monitors USB ports for connected devices
 - Detects block devices and rpiboot-compatible devices
-- Flashes devices using the configured image
+- Flashes devices using the given image
 - Displays real-time progress and logs
 
-Press `Ctrl+C` to gracefully shutdown.
+To quit, press `q` or `Ctrl+C` twice within 3 seconds. The first press shows a confirmation prompt, which also warns if flash operations are in progress; any other key cancels it. Flash operations still running when you quit are aborted, and the affected devices are listed as incomplete on exit.
+
+#### Port States
+
+| State | Meaning |
+|-------|---------|
+| `NOT_CONNECTED` | Port is empty |
+| `UNKNOWN` | Device connected, but nothing to flash (e.g. a card reader without a card - shown as "No medium") |
+| `BOOTING` | rpiboot is booting a Raspberry Pi into mass storage mode |
+| `WAITING` | Block device detected, waiting `stable_delay` seconds before flashing |
+| `FLASHING` | Image is being written |
+| `COMPLETED` | Flash succeeded; remove the card/device to reset the port |
+| `FAILED` | Flash or rpiboot failed; stays until the card (flash failure) or the device (rpiboot failure) is removed |
+| `IGNORED` | Device is not handled: it holds the running system, or it exposes more than one block device |
 
 ### CLI Commands
 
@@ -142,14 +158,14 @@ Run the automatic flashing daemon (background service):
 tsflashd [--config /path/to/config.yml]
 ```
 
-The daemon runs continuously, monitoring USB ports and automatically flashing devices. Useful for production environments where the TUI isn't needed.
+The daemon runs continuously, monitoring USB ports and automatically flashing devices (same behaviour as the TUI). Useful for production environments where the TUI isn't needed. `-v` / `-q` override the `log_level` from the configuration file. `SIGTERM` / `SIGINT` stop the daemon and abort running flash operations.
 
 #### rpiboot
 
 Boot a Raspberry Pi device into mass storage mode:
 
 ```bash
-tsflash rpiboot [-p 1-2.3] [--verbose]
+tsflash [-v] rpiboot [-p 1-2.3]
 ```
 
 This is useful for flashing Raspberry Pi devices that don't have an SD card inserted.
@@ -170,9 +186,16 @@ Devices that support USB 3.0 connect to the USB 3.0 bus, while USB 2.0-only devi
 
 tsflash identifies related hubs by matching vendor IDs and port numbers on consecutive buses. The unified port uses the USB 2.0 port string as the canonical identifier (e.g., `3-1.4`) and merges device information from both buses, preferring USB 3.0 device information when available.
 
+## Safety
+
+- **System disk protection** - Disks holding `/`, `/boot` or `/boot/firmware` (including all of their partitions) are never flashed. In the TUI and daemon they are shown as `IGNORED`; `tsflash flash` refuses them.
+- **One block device per port** - Devices exposing more than one flashable block device (e.g. multi-slot card readers with several cards) are not handled and shown as `IGNORED`.
+- **No medium** - Block devices with size 0 (e.g. card readers without a card) are not flashed.
+- **devmon** - `tsflash tui` and `tsflash daemon` refuse to start while `devmon` is running, as it automounts devices during flashing.
+
 ## Configuration
 
-Configuration is stored in a YAML file (default: `/boot/firmware/tsflash.yml`). See `tsflash.example.yml` for a complete example.
+Configuration (daemon only) is stored in a YAML file (default: `/boot/firmware/tsflash.yml`). See `tsflash.example.yml` for a complete example.
 
 **Key Settings:**
 
@@ -186,7 +209,7 @@ Configuration is stored in a YAML file (default: `/boot/firmware/tsflash.yml`). 
 
 | Command | Description |
 |---------|-------------|
-| `tsflash` | Launch interactive TUI (default mode) |
+| `tsflash tui <file>` | Launch interactive TUI |
 | `tsflash flash <file> <device>` | Manually flash an image to a block device |
 | `tsflash usb` | List USB ports and connected devices |
 | `tsflash daemon` | Run automatic flashing daemon (background service) |
