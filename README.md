@@ -63,7 +63,7 @@ tsflash usb [--all | --port 1-2] [--json]                               # list h
 sudo tsflash rpiboot [-p 1-2.3]                                         # boot a Pi into mass storage mode
 ```
 
-`tsflash usb` shows the first hub and its downstream ports unless `--all` or `--port` is given.
+`tsflash usb` shows the port tree of the first hub (the one `tui` and `daemon` monitor by default), or of all ports (`--all`) or one port (`--port`). For each device it lists block devices with their size and notes how tsflash will treat it: no medium, system disk, several block devices, or Raspberry Pi in USB boot mode.
 
 ## Safety
 

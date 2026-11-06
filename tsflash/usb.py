@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import platform
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -573,6 +574,11 @@ def enumerate_all_usb_ports():
     return unified_ports
 
 
+def port_sort_key(port):
+    """Sort key for port strings: "1-2.10" after "1-2.9" (numeric, not alphabetical)."""
+    return [int(part) if part.isdigit() else part for part in re.split(r"[-.]", port)]
+
+
 def find_first_usb_hub(ports_data):
     """
     Find the first USB hub in the ports data.
@@ -586,7 +592,7 @@ def find_first_usb_hub(ports_data):
         str: Port string of the first hub found, or None if no hub found
     """
     # Sort ports to get consistent ordering
-    sorted_ports = sorted(ports_data.keys())
+    sorted_ports = sorted(ports_data.keys(), key=port_sort_key)
     
     for port_str in sorted_ports:
         # Check if this port has children (indicating it's a hub)

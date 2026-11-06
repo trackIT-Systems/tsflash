@@ -9,7 +9,14 @@ import sys
 from . import __version__
 from .flash import flash_image, create_image_mmap
 from .validators import validate_image_file, validate_block_device, disk_for_device, get_system_disks
-from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
+from .usb import (
+    block_device_size,
+    enumerate_all_usb_ports,
+    filter_ports_by_limit,
+    find_first_usb_hub,
+    format_usb_output,
+)
+from .usb_view import print_usb_tree
 from .daemon import run_daemon
 from .rpiboot import run_rpiboot
 from .tui import run_tui
@@ -149,34 +156,29 @@ def cmd_usb(args):
     logger = logging.getLogger(__name__)
     
     try:
-        # Enumerate all USB ports
         logger.debug("Enumerating USB ports...")
         ports_data = enumerate_all_usb_ports()
+        # The hub tui/daemon would monitor without --port
+        default_port = find_first_usb_hub(ports_data)
         
-        # Determine which ports to show
         if args.all:
-            # Show all ports
             logger.debug("Showing all USB ports")
         elif args.port:
-            # Use specified port
             logger.debug(f"Limiting output to port and downstream ports: {args.port}")
             ports_data = filter_ports_by_limit(ports_data, args.port)
             if not ports_data:
                 logger.warning(f"No ports found matching port '{args.port}'")
                 return 1
+        elif default_port:
+            logger.debug(f"Limiting output to first hub: {default_port}")
+            ports_data = filter_ports_by_limit(ports_data, default_port)
         else:
-            # Default: find first hub and limit to it
-            first_hub = find_first_usb_hub(ports_data)
-            if first_hub:
-                logger.debug(f"Limiting output to first hub: {first_hub}")
-                ports_data = filter_ports_by_limit(ports_data, first_hub)
-            else:
-                # No hub found, show all ports
-                logger.debug("No USB hub found, showing all ports")
+            logger.debug("No USB hub found, showing all ports")
         
-        # Format and print output
-        output = format_usb_output(ports_data, json_output=args.json)
-        print(output)
+        if args.json:
+            print(format_usb_output(ports_data, json_output=True))
+        else:
+            print_usb_tree(ports_data, get_system_disks(), block_device_size, default_port)
         
         return 0
     except RuntimeError as e:
