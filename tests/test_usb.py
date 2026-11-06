@@ -33,6 +33,7 @@ def test_block_device_size(tmp_path, monkeypatch):
     (tmp_path / "sda" / "size").write_text("2048\n")
     (tmp_path / "sdb").mkdir()
     (tmp_path / "sdb" / "size").write_text("0\n")
+    monkeypatch.setattr(usb.platform, "system", lambda: "Linux")
     monkeypatch.setattr(usb, "SYSFS_CLASS_BLOCK", tmp_path)
 
     assert block_device_size("/dev/sda") == 2048 * 512

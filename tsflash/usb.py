@@ -34,8 +34,10 @@ def _read_file_safe(path, default=None):
 
 def block_device_size(device):
     """
-    Get the size of a block device in bytes from sysfs.
+    Get the size of a block device in bytes.
 
+    On Linux this is read from sysfs; on macOS it comes from the I/O Registry
+    data of the last enumerate_all_usb_ports() call.
     A size of 0 typically means "no medium", e.g. a USB card reader without a card.
 
     Args:
@@ -44,6 +46,9 @@ def block_device_size(device):
     Returns:
         int: Size in bytes, or None if it cannot be determined
     """
+    if platform.system() == 'Darwin':
+        from . import usb_macos
+        return usb_macos.disk_size(device)
     size_str = _read_file_safe(SYSFS_CLASS_BLOCK / os.path.basename(device) / "size")
     try:
         return int(size_str) * 512  # sysfs reports 512-byte sectors
@@ -529,11 +534,15 @@ def enumerate_all_usb_ports():
         dict: Dictionary mapping port strings to device info dictionaries
         
     Raises:
-        RuntimeError: If not running on Linux or sysfs is not available
+        RuntimeError: If the platform is not supported or USB information
+            cannot be read
     """
-    # Check if we're on Linux
-    if platform.system() != 'Linux':
-        raise RuntimeError("USB enumeration is only supported on Linux")
+    system = platform.system()
+    if system == 'Darwin':
+        from . import usb_macos
+        return usb_macos.enumerate_ports()
+    if system != 'Linux':
+        raise RuntimeError(f"USB enumeration is not supported on {system}")
     
     # Check if sysfs is available
     if not USB_SYSFS_PATH.exists():
