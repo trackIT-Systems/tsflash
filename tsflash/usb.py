@@ -581,27 +581,24 @@ def port_sort_key(port):
 
 def find_first_usb_hub(ports_data):
     """
-    Find the first USB hub in the ports data.
-    
-    A hub is identified by having child ports (ports starting with its name + ".")
-    
+    Find the hub to monitor by default: the first hub (in port order) that has
+    no other hubs below it.
+
+    A hub is identified by having child ports (ports starting with its name + ".").
+    Skipping hubs with hubs below them skips the hubs built into computers and
+    docks, and selects the hub the cards and devices are plugged into.
+
     Args:
         ports_data: Dictionary mapping port strings to device info
-        
+
     Returns:
-        str: Port string of the first hub found, or None if no hub found
+        str: Port string of the hub, or None if no hub found
     """
-    # Sort ports to get consistent ordering
-    sorted_ports = sorted(ports_data.keys(), key=port_sort_key)
-    
-    for port_str in sorted_ports:
-        # Check if this port has children (indicating it's a hub)
-        port_prefix = port_str + "."
-        has_children = any(p.startswith(port_prefix) for p in ports_data.keys())
-        
-        if has_children:
-            return port_str
-    
+    hubs = [p for p in sorted(ports_data, key=port_sort_key)
+            if any(q.startswith(p + ".") for q in ports_data)]
+    for hub in hubs:
+        if not any(h.startswith(hub + ".") for h in hubs):
+            return hub
     return None
 
 

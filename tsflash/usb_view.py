@@ -31,7 +31,8 @@ def _is_present(info: dict) -> bool:
 
 
 def describe_port(port: str, info: dict, ports: Dict[str, dict], system_disks: Set[str],
-                  device_size: Callable[[str], Optional[int]], default_port: Optional[str]) -> Text:
+                  device_size: Callable[[str], Optional[int]], default_port: Optional[str],
+                  marker: str = "monitored by default") -> Text:
     """One tree line: port, device name, IDs and what tsflash would do with it."""
     line = Text()
     line.append(port, style="bold cyan")
@@ -50,7 +51,7 @@ def describe_port(port: str, info: dict, ports: Dict[str, dict], system_disks: S
     if child_ports:
         line.append(f"  hub, {len(child_ports)} ports", style="dim")
     if port == default_port:
-        line.append("  ◀ monitored by default", style="bold yellow")
+        line.append(f"  ◀ {marker}", style="bold yellow")
 
     block_devices = info.get("block_devices") or []
     flashable = []
@@ -78,19 +79,20 @@ def describe_port(port: str, info: dict, ports: Dict[str, dict], system_disks: S
 
 def build_tree(ports: Dict[str, dict], system_disks: Set[str],
                device_size: Callable[[str], Optional[int]],
-               default_port: Optional[str] = None) -> List[Tree]:
+               default_port: Optional[str] = None,
+               marker: str = "monitored by default") -> List[Tree]:
     """Build one rich Tree per top-level port in `ports`."""
     roots = sorted((p for p in ports if _parent(p) not in ports), key=port_sort_key)
 
     def add(node: Tree, port: str) -> None:
         for child in _children(port, ports):
             add(node.add(describe_port(child, ports[child], ports, system_disks,
-                                       device_size, default_port)), child)
+                                       device_size, default_port, marker)), child)
 
     trees = []
     for root in roots:
         tree = Tree(describe_port(root, ports[root], ports, system_disks, device_size,
-                                  default_port), guide_style="dim")
+                                  default_port, marker), guide_style="dim")
         add(tree, root)
         trees.append(tree)
     return trees
@@ -110,4 +112,4 @@ def print_usb_tree(ports: Dict[str, dict], system_disks: Set[str],
         console.print()
         console.print(Text(
             "Use the port names with --port (tui, usb) or -p (rpiboot). "
-            "Without --port, tui and daemon monitor the first hub.", style="dim"))
+            "Without --port, tui and daemon monitor the hub marked ◀.", style="dim"))

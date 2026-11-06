@@ -21,10 +21,12 @@ All commands that write to devices need root. `-v` (debug) and `-q` (warnings on
 ### TUI
 
 ```bash
-sudo tsflash tui IMAGE [--port 1-2] [--block-size 4M] [--stable-delay 3]
+sudo tsflash tui [IMAGE] [--port 1-2] [--block-size 4M] [--stable-delay 3]
 ```
 
-Monitors the first USB hub found (or `--port`) and flashes each device after it has been connected for `--stable-delay` seconds. To quit, press `q` or `Ctrl+C` twice within 3 seconds; any other key cancels. Flash operations still running are aborted, and the affected devices are listed as incomplete on exit.
+Without `IMAGE`, a setup page lists the `.img` and `.iso` files in the current directory (newest first) and the USB port tree, and asks for the image and the port. Press Enter to accept the newest image and the default hub, or type a number, path or port name.
+
+Monitors the default hub (or `--port`) and flashes each device after it has been connected for `--stable-delay` seconds. To quit, press `q` or `Ctrl+C` twice within 3 seconds; any other key cancels. Flash operations still running are aborted, and the affected devices are listed as incomplete on exit.
 
 | State | Meaning |
 |-------|---------|
@@ -48,7 +50,7 @@ Same behaviour as the TUI, without a user interface. Settings are read from `/bo
 | Key | Default | Description |
 |-----|---------|-------------|
 | `image_path` | required | Image to flash (`.img` or `.iso`) |
-| `port` | first hub | USB hub port to monitor, e.g. `1-2` |
+| `port` | default hub | USB hub port to monitor, e.g. `1-2` |
 | `block_size` | `4M` | Write block size, e.g. `1M`, `512K` |
 | `stable_delay` | `3` | Seconds to wait after a device appears |
 | `log_level` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`; `-v` / `-q` override it |
@@ -63,7 +65,7 @@ tsflash usb [--all | --port 1-2] [--json]                               # list h
 sudo tsflash rpiboot [-p 1-2.3]                                         # boot a Pi into mass storage mode
 ```
 
-`tsflash usb` shows the port tree of the first hub (the one `tui` and `daemon` monitor by default), or of all ports (`--all`) or one port (`--port`). For each device it lists block devices with their size and notes how tsflash will treat it: no medium, system disk, several block devices, or Raspberry Pi in USB boot mode.
+The default hub is the first hub that has no other hubs below it, which skips hubs built into computers and docks. `tsflash usb` shows the port tree of the default hub, or of all ports (`--all`) or one port (`--port`). For each device it lists block devices with their size and notes how tsflash will treat it: no medium, system disk, several block devices, or Raspberry Pi in USB boot mode.
 
 ## Safety
 

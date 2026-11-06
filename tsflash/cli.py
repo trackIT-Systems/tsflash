@@ -20,6 +20,7 @@ from .usb_view import print_usb_tree
 from .daemon import run_daemon
 from .rpiboot import run_rpiboot
 from .tui import run_tui
+from .tui_setup import SetupAborted, run_setup
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -170,7 +171,7 @@ def cmd_usb(args):
                 logger.warning(f"No ports found matching port '{args.port}'")
                 return 1
         elif default_port:
-            logger.debug(f"Limiting output to first hub: {default_port}")
+            logger.debug(f"Limiting output to the default hub: {default_port}")
             ports_data = filter_ports_by_limit(ports_data, default_port)
         else:
             logger.debug("No USB hub found, showing all ports")
@@ -213,6 +214,42 @@ def cmd_rpiboot(args):
     return exit_code
 
 
+def interactive_setup(args):
+    """Select the image and port on the setup page. Returns None if aborted."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        logging.getLogger(__name__).error(
+            "IMAGE-PATH is required when not running in a terminal")
+        return None
+
+    from rich.console import Console
+    from rich.prompt import Prompt
+
+    console = Console()
+
+    def ask(prompt, default):
+        if default is None:
+            return Prompt.ask(prompt, console=console)
+        return Prompt.ask(prompt, default=default, console=console)
+
+    try:
+        return run_setup(
+            port=args.port,
+            settings={"block size": args.block_size,
+                      "stable delay": f"{args.stable_delay:g} s"},
+            enumerate_ports=enumerate_all_usb_ports,
+            system_disks=get_system_disks(),
+            device_size=block_device_size,
+            ask=ask,
+            console=console,
+        )
+    except (SetupAborted, KeyboardInterrupt, EOFError):
+        console.print("\nAborted.")
+        return None
+    except RuntimeError as e:
+        logging.getLogger(__name__).error(f"USB enumeration error: {e}")
+        return None
+
+
 def cmd_tui(args):
     """Handle the tui command."""
     # Check if devmon is running
@@ -227,10 +264,17 @@ def cmd_tui(args):
         log_level = 'WARNING'
     else:
         log_level = 'INFO'
-    
+
+    image_path, port = args.image_path, args.port
+    if image_path is None:
+        selection = interactive_setup(args)
+        if selection is None:
+            return 1
+        image_path, port = selection
+
     return run_tui(
-        image_path=args.image_path,
-        port=args.port,
+        image_path=image_path,
+        port=port,
         block_size=args.block_size,
         stable_delay=args.stable_delay,
         log_level=log_level
@@ -292,7 +336,7 @@ def main():
     # USB subcommand
     usb_parser = subparsers.add_parser(
         'usb',
-        help='List USB ports and connected devices (default: first hub and downstream ports)'
+        help='List USB ports and connected devices (default: the default hub and its ports)'
     )
     usb_parser.add_argument(
         '--json',
@@ -302,7 +346,7 @@ def main():
     usb_parser.add_argument(
         '--all',
         action='store_true',
-        help='Show all USB ports (default: show only first hub and downstream ports)'
+        help='Show all USB ports (default: show only the default hub and its ports)'
     )
     usb_parser.add_argument(
         '--port',
@@ -340,12 +384,14 @@ def main():
     tui_parser.add_argument(
         'image_path',
         metavar='IMAGE-PATH',
-        help='Path to the image file to flash'
+        nargs='?',
+        help='Path to the image file to flash. Without it, a setup page asks '
+             'for the image and the port'
     )
     tui_parser.add_argument(
         '--port',
         metavar='PORT',
-        help='USB port to monitor (e.g., "1-2"). Auto-detects first hub if not specified'
+        help='USB port to monitor (e.g., "1-2"). Default: the first hub without hubs below it'
     )
     tui_parser.add_argument(
         '--block-size',

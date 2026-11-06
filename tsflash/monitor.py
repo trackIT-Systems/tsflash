@@ -67,7 +67,7 @@ def find_monitor_port(ports_data: Dict, config_port: Optional[str]) -> Optional[
 
     first_hub = find_first_usb_hub(ports_data)
     if first_hub:
-        logger.info(f"Auto-detected first hub: {first_hub}")
+        logger.info(f"Auto-detected hub: {first_hub}")
         return first_hub
     logger.warning("No USB hub found for auto-detection")
     return None
