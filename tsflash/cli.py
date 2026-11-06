@@ -7,7 +7,7 @@ import sys
 
 from . import __version__
 from .flash import flash_image, create_image_mmap
-from .validators import validate_image_file, validate_block_device
+from .validators import validate_image_file, validate_block_device, disk_for_device, get_system_disks
 from .usb import enumerate_all_usb_ports, format_usb_output, filter_ports_by_limit, find_first_usb_hub
 from .daemon import run_daemon
 from .rpiboot import run_rpiboot
@@ -105,6 +105,13 @@ def cmd_flash(args):
     is_valid, error_msg = validate_block_device(args.target)
     if not is_valid:
         logger.error(error_msg)
+        return 1
+    
+    # Never overwrite the disk the running system lives on
+    system_disks = disk_for_device(args.target) & get_system_disks()
+    if system_disks:
+        logger.error(f"Refusing to flash {args.target}: it is on the system disk "
+                     f"({', '.join(sorted(system_disks))}) holding / or /boot")
         return 1
     
     # Flash the image

@@ -119,6 +119,100 @@ def _unescape_mount_field(field):
     return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
 
 
+SYSFS_CLASS_BLOCK = "/sys/class/block"
+SYSFS_DEV_BLOCK = "/sys/dev/block"
+
+
+def _sysfs_disks(sysfs_path, _depth=0):
+    """
+    Resolve a sysfs block device directory to the physical disk name(s) backing it.
+
+    Partitions resolve to their parent disk; device-mapper/RAID devices resolve
+    (recursively) through their slaves.
+    """
+    if _depth > 8:
+        return set()
+    sysfs_path = os.path.realpath(sysfs_path)
+    if not os.path.isdir(sysfs_path):
+        return set()
+
+    slaves_dir = os.path.join(sysfs_path, "slaves")
+    try:
+        slaves = os.listdir(slaves_dir)
+    except OSError:
+        slaves = []
+    if slaves:
+        disks = set()
+        for slave in slaves:
+            disks |= _sysfs_disks(os.path.join(SYSFS_CLASS_BLOCK, slave), _depth + 1)
+        return disks
+
+    if os.path.exists(os.path.join(sysfs_path, "partition")):
+        return {os.path.basename(os.path.dirname(sysfs_path))}
+    return {os.path.basename(sysfs_path)}
+
+
+def disk_for_device(device):
+    """
+    Get the physical disk name(s) for a block device or partition path.
+
+    Example: "/dev/mmcblk0p2" -> {"mmcblk0"}, "/dev/sda" -> {"sda"}.
+    Returns an empty set if this cannot be determined (e.g. no sysfs).
+    """
+    name = os.path.basename(os.path.realpath(device))
+    return _sysfs_disks(os.path.join(SYSFS_CLASS_BLOCK, name))
+
+
+def _mount_source(mount_point):
+    """Return the device path mounted at mount_point according to /proc/mounts."""
+    source = None
+    try:
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                # Last match wins (later mounts shadow earlier ones)
+                if len(parts) >= 2 and _unescape_mount_field(parts[1]) == mount_point:
+                    source = _unescape_mount_field(parts[0])
+    except IOError:
+        return None
+    return source if source and source.startswith("/dev/") else None
+
+
+def get_system_disks(mount_points=("/", "/boot", "/boot/firmware")):
+    """
+    Get the names of all physical disks that hold the running system.
+
+    These disks (and therefore all of their partitions) must never be flashed.
+
+    Args:
+        mount_points: Mount points whose backing disks count as system disks
+
+    Returns:
+        set: Disk names, e.g. {"mmcblk0"} or {"sda"}. Empty if undeterminable.
+    """
+    disks = set()
+    for mount_point in mount_points:
+        try:
+            st = os.stat(mount_point)
+        except OSError:
+            continue
+
+        # Preferred: map the filesystem's device number to sysfs
+        # (works for /dev/root and other non-obvious mount sources)
+        found = _sysfs_disks(os.path.join(SYSFS_DEV_BLOCK, f"{os.major(st.st_dev)}:{os.minor(st.st_dev)}"))
+
+        # Fallback (e.g. btrfs/overlay with anonymous device numbers):
+        # use the mount source from /proc/mounts
+        if not found:
+            source = _mount_source(mount_point)
+            if source:
+                found = disk_for_device(source)
+
+        disks |= found
+
+    return disks
+
+
 def is_mounted(device):
     """
     Check if a device or any of its partitions are mounted.
