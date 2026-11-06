@@ -1,28 +1,46 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tsflash"
-version = "0.1.0"
-description = "SD Card Flashing Tool"
+dynamic = ["version"]
+description = "Flash OS images to SD cards and Raspberry Pis connected to a USB hub"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pyyaml>=6.0",
-    "rich>=13.0.0",
+    "pyyaml>=6.0.1",
+    "rich>=13.0",
+]
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Hardware",
+    "Topic :: System :: Installation/Setup",
 ]
 
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0",
-]
+[project.urls]
+Repository = "https://github.com/trackIT-Systems/tsflash"
+Issues = "https://github.com/trackIT-Systems/tsflash/issues"
 
 [project.scripts]
 tsflash = "tsflash.cli:main"
 tsflashd = "tsflash.daemon:main"
 
+[dependency-groups]
+test = ["pytest>=8"]
+
 [tool.setuptools]
 packages = ["tsflash"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tsflash.__version__" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
