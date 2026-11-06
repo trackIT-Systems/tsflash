@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import stat
 import subprocess
 
@@ -94,6 +95,30 @@ def validate_block_device(path):
     return True, None
 
 
+def _is_device_or_partition(name, base):
+    """
+    Check whether block device name `name` is `base` itself or one of its partitions.
+
+    Handles Linux (sda -> sda1, mmcblk0 -> mmcblk0p1, nvme0n1 -> nvme0n1p1) and
+    macOS (disk4 -> disk4s1) naming. Plain prefix matching is not enough, as
+    "sda" would also match "sdaa1" and "disk1" would match "disk10s1".
+    """
+    if name == base:
+        return True
+    if not name.startswith(base):
+        return False
+    suffix = name[len(base):]
+    if base[-1].isdigit():
+        # Partition separator required after a trailing digit (mmcblk0p1, disk4s1)
+        return re.fullmatch(r"[ps]\d+(s\d+)?", suffix) is not None
+    return suffix.isdigit()
+
+
+def _unescape_mount_field(field):
+    """Decode octal escapes (e.g. \\040 for space) used in /proc/mounts."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
 def is_mounted(device):
     """
     Check if a device or any of its partitions are mounted.
@@ -122,15 +147,15 @@ def is_mounted(device):
             for line in f:
                 parts = line.split()
                 if len(parts) >= 1:
-                    mount_device = parts[0]
-                    mount_point = parts[1] if len(parts) > 1 else None
+                    mount_device = _unescape_mount_field(parts[0])
+                    mount_point = _unescape_mount_field(parts[1]) if len(parts) > 1 else None
 
                     # Check if this mount point uses our device or a partition
                     mount_basename = os.path.basename(mount_device)
 
                     # Match device or partition for any of the basenames we're checking
                     for check_basename in check_basenames:
-                        if mount_basename.startswith(check_basename):
+                        if _is_device_or_partition(mount_basename, check_basename):
                             if mount_point:
                                 mounted.append(mount_point)
                             else:
@@ -159,7 +184,7 @@ def is_mounted(device):
 
                     # Match device or partition for any of the basenames we're checking
                     for check_basename in check_basenames:
-                        if mount_basename.startswith(check_basename):
+                        if _is_device_or_partition(mount_basename, check_basename):
                             mounted.append(mount_point)
                             break
     except (subprocess.SubprocessError, FileNotFoundError) as e:
