@@ -8,7 +8,7 @@ tsflash watches the ports of a USB hub and flashes every card or device that is 
 
 ## Installation
 
-Requires Linux and Python 3.11+. Booting Raspberry Pis additionally needs [`rpiboot`](https://github.com/raspberrypi/usbboot) in `PATH`.
+Requires Linux or macOS and Python 3.11+. Booting Raspberry Pis additionally needs [`rpiboot`](https://github.com/raspberrypi/usbboot) in `PATH` (macOS: `brew install rpiboot`).
 
 ```bash
 pip install .
@@ -71,9 +71,19 @@ sudo tsflash rpiboot [-p 1-2.3]                                         # boot a
 - Ports exposing more than one block device with a medium are not handled (e.g. multi-slot card readers with several cards).
 - `tsflash tui` and `tsflash daemon` refuse to start while `devmon` is running, as it would mount devices during flashing.
 
+## macOS
+
+- Ports are named like on Linux and in `rpiboot -p`: `<controller>-<port>.<port>…`, e.g. `0-1.4.2`. Run `tsflash usb --all` to find your hub.
+- Devices are listed as `/dev/diskN` and written through the raw device `/dev/rdiskN`, which is much faster.
+- macOS mounts inserted cards automatically; tsflash unmounts them (`diskutil unmountDisk`) before flashing. Dialogs about unreadable disks can be dismissed.
+- The disk holding `/` and the data volume (resolved through its APFS container) is never flashed.
+
 ## USB 2.0/3.0 hubs
 
-A USB 3.0 hub appears to Linux as two hubs on different buses (e.g. `3-1` for USB 2.0 and `4-1` for USB 3.0). tsflash merges each pair, so every physical port is listed once under its USB 2.0 name (e.g. `3-1.4`), whichever bus the device uses. The pairing currently assumes odd bus numbers are USB 2.0 and the next even bus is USB 3.0, which holds on Raspberry Pi 4 and 5 (see [#1](https://github.com/trackIT-Systems/tsflash/issues/1)).
+A USB 3.0 hub appears to the operating system as two hubs, one for USB 2.0 and one for USB 3.0 devices. tsflash merges each pair, so every physical port is listed once under its USB 2.0 name, whichever half the device uses.
+
+- **Linux:** the halves are on different buses (e.g. `3-1` and `4-1`). The pairing assumes odd bus numbers are USB 2.0 and the next even bus is USB 3.0, which holds on Raspberry Pi 4 and 5 (see [#1](https://github.com/trackIT-Systems/tsflash/issues/1)).
+- **macOS:** the halves are paired by the Container ID both report. Hubs that share a Container ID with more than one other hub (seen on some cheap hub chips) are listed separately.
 
 ## Development
 
