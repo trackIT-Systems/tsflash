@@ -191,16 +191,15 @@ def cmd_daemon(args):
     if exit_code != 0:
         return exit_code
     
-    # The daemon module handles its own logging setup, but we can override
-    # with CLI flags if specified
-    if args.verbose or args.quiet:
-        import logging
-        if args.verbose:
-            logging.basicConfig(level=logging.DEBUG)
-        elif args.quiet:
-            logging.basicConfig(level=logging.WARNING)
+    # verbose/quiet flags override the config file's log_level
+    if args.verbose:
+        log_level = 'DEBUG'
+    elif args.quiet:
+        log_level = 'WARNING'
+    else:
+        log_level = None
     
-    return run_daemon(args.config)
+    return run_daemon(args.config, log_level=log_level)
 
 
 def cmd_rpiboot(args):
