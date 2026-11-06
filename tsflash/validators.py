@@ -2,6 +2,8 @@
 
 import logging
 import os
+import platform
+import plistlib
 import re
 import stat
 import subprocess
@@ -152,13 +154,54 @@ def _sysfs_disks(sysfs_path, _depth=0):
     return {os.path.basename(sysfs_path)}
 
 
+def _diskutil_info(device, run=subprocess.run):
+    """`diskutil info -plist` as a dict, or None if diskutil fails."""
+    try:
+        result = run(["diskutil", "info", "-plist", device], capture_output=True, timeout=10)
+        if result.returncode != 0:
+            return None
+        return plistlib.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, plistlib.InvalidFileException, ValueError):
+        return None
+
+
+def _macos_physical_disks(device, run=subprocess.run, _depth=0):
+    """
+    Resolve a macOS disk, partition or mounted path to its physical disk(s).
+
+    APFS volumes live on synthesized container disks; those resolve through
+    their physical stores (e.g. disk3s3s1 -> disk3 -> disk0s2 -> disk0).
+    """
+    if _depth > 4:
+        return set()
+    info = _diskutil_info(device, run)
+    if not info:
+        return set()
+    whole = info.get("ParentWholeDisk") or info.get("DeviceIdentifier")
+    if not whole:
+        return set()
+    whole_info = info if info.get("WholeDisk") else _diskutil_info(whole, run) or {}
+    stores = whole_info.get("APFSPhysicalStores") or []
+    if stores:
+        disks = set()
+        for store in stores:
+            name = store.get("APFSPhysicalStore")
+            if name:
+                disks |= _macos_physical_disks(name, run, _depth + 1)
+        return disks
+    return {whole}
+
+
 def disk_for_device(device):
     """
     Get the physical disk name(s) for a block device or partition path.
 
-    Example: "/dev/mmcblk0p2" -> {"mmcblk0"}, "/dev/sda" -> {"sda"}.
+    Example: "/dev/mmcblk0p2" -> {"mmcblk0"}, "/dev/sda" -> {"sda"},
+    "/dev/rdisk4s1" -> {"disk4"} (macOS).
     Returns an empty set if this cannot be determined (e.g. no sysfs).
     """
+    if platform.system() == "Darwin":
+        return _macos_physical_disks(device)
     name = os.path.basename(os.path.realpath(device))
     return _sysfs_disks(os.path.join(SYSFS_CLASS_BLOCK, name))
 
@@ -178,7 +221,15 @@ def _mount_source(mount_point):
     return source if source and source.startswith("/dev/") else None
 
 
-def get_system_disks(mount_points=("/", "/boot", "/boot/firmware")):
+LINUX_SYSTEM_MOUNT_POINTS = ("/", "/boot", "/boot/firmware")
+MACOS_SYSTEM_MOUNT_POINTS = ("/", "/System/Volumes/Data")
+
+# The boot disk cannot change while tsflash runs; resolving it on macOS takes
+# several diskutil calls, so the result is cached
+_macos_system_disks = None
+
+
+def get_system_disks(mount_points=None):
     """
     Get the names of all physical disks that hold the running system.
 
@@ -186,10 +237,31 @@ def get_system_disks(mount_points=("/", "/boot", "/boot/firmware")):
 
     Args:
         mount_points: Mount points whose backing disks count as system disks
+            (default: /, /boot, /boot/firmware on Linux; / and the data
+            volume on macOS)
 
     Returns:
-        set: Disk names, e.g. {"mmcblk0"} or {"sda"}. Empty if undeterminable.
+        set: Disk names, e.g. {"mmcblk0"}, {"sda"} or {"disk0"}. Empty if
+        undeterminable.
     """
+    global _macos_system_disks
+    if platform.system() == "Darwin":
+        if mount_points is None:
+            if _macos_system_disks is None:
+                disks = set()
+                for mount_point in MACOS_SYSTEM_MOUNT_POINTS:
+                    disks |= _macos_physical_disks(mount_point)
+                if disks:
+                    _macos_system_disks = disks
+                return disks
+            return set(_macos_system_disks)
+        disks = set()
+        for mount_point in mount_points:
+            disks |= _macos_physical_disks(mount_point)
+        return disks
+
+    if mount_points is None:
+        mount_points = LINUX_SYSTEM_MOUNT_POINTS
     disks = set()
     for mount_point in mount_points:
         try:

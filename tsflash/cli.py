@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import platform
 import subprocess
 import sys
 
@@ -43,6 +44,8 @@ def is_devmon_running():
     Returns:
         bool: True if devmon is running, False otherwise
     """
+    if platform.system() != 'Linux':
+        return False  # devmon (udevil) only exists on Linux
     try:
         # Use pgrep to check if devmon is running
         result = subprocess.run(

@@ -98,6 +98,7 @@ def fake_sysfs(tmp_path, monkeypatch):
     add("pci0/usb2/host1/block/sdb/sdb1", partition=True)
     add("virtual/block/dm-0", slaves=["sdb1"])
 
+    monkeypatch.setattr(validators.platform, "system", lambda: "Linux")
     monkeypatch.setattr(validators, "SYSFS_CLASS_BLOCK", str(class_block))
     monkeypatch.setattr(validators, "SYSFS_DEV_BLOCK", str(dev_block))
     return tmp_path

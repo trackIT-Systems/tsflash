@@ -1,7 +1,10 @@
 """Core flashing functionality."""
 
+import fcntl
 import os
 import platform
+import re
+import struct
 import subprocess
 import logging
 import time
@@ -130,6 +133,51 @@ def create_image_mmap(image_path: str) -> MappedImage:
         raise IOError(f"Cannot create memory-mapped image: {e}")
 
 
+# macOS <sys/disk.h>: _IOR('d', 24, uint32_t) and _IOR('d', 25, uint64_t)
+DKIOCGETBLOCKSIZE = 0x40046418
+DKIOCGETBLOCKCOUNT = 0x40086419
+
+_MACOS_DISK_RE = re.compile(r"^/dev/r?disk\d+$")
+
+
+def is_macos_whole_disk(device: str) -> bool:
+    """Whether device is a macOS whole disk node (/dev/diskN or /dev/rdiskN)."""
+    return platform.system() == 'Darwin' and _MACOS_DISK_RE.match(device) is not None
+
+
+def raw_device_path(device: str) -> str:
+    """
+    Device node to write to. On macOS this is the raw node /dev/rdiskN, which
+    bypasses the buffer cache and is many times faster than /dev/diskN.
+    """
+    if is_macos_whole_disk(device) and device.startswith("/dev/disk"):
+        return "/dev/r" + device[len("/dev/"):]
+    return device
+
+
+def device_geometry(fd: int):
+    """
+    Get (size_in_bytes, sector_size) of an open device.
+    
+    Raw macOS disks report their size only via ioctl and require writes in
+    whole sectors; for everything else, sector_size is 1 (no alignment needed)
+    and the size is determined by seeking to the end (0 if unknown).
+    """
+    if platform.system() == 'Darwin':
+        try:
+            sector = struct.unpack("I", fcntl.ioctl(fd, DKIOCGETBLOCKSIZE, b"\0" * 4))[0]
+            count = struct.unpack("Q", fcntl.ioctl(fd, DKIOCGETBLOCKCOUNT, b"\0" * 8))[0]
+            return sector * count, sector
+        except OSError:
+            pass  # not a disk (e.g. a regular file)
+    try:
+        size = os.lseek(fd, 0, os.SEEK_END)
+        os.lseek(fd, 0, os.SEEK_SET)
+    except OSError:
+        size = 0
+    return size, 1
+
+
 def unmount_device(device):
     """
     Unmount all partitions of a device.
@@ -140,6 +188,22 @@ def unmount_device(device):
     Returns:
         bool: True if successful, False otherwise
     """
+    if is_macos_whole_disk(device):
+        # Unmounts all volumes of the disk, including APFS volumes on
+        # synthesized container disks (which is_mounted() cannot see)
+        disk = device.replace("/dev/rdisk", "/dev/disk", 1)
+        try:
+            result = subprocess.run(['diskutil', 'unmountDisk', disk],
+                                    capture_output=True, text=True, check=False)
+        except OSError as e:
+            logger.error(f"Error unmounting {disk}: {e}")
+            return False
+        if result.returncode != 0:
+            logger.error(f"Failed to unmount {disk}: {(result.stderr or result.stdout).strip()}")
+            return False
+        logger.debug(f"Unmounted all volumes of {disk}")
+        return True
+    
     from .validators import is_mounted
     
     mounted = is_mounted(device)
@@ -220,7 +284,10 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
     if not unmount_device(target_device):
         raise IOError(f"Failed to unmount device {target_device}")
     
+    write_path = raw_device_path(target_device)
     logger.info(f"Flashing {display_path} to {target_device}...")
+    if write_path != target_device:
+        logger.debug(f"Writing via raw device {write_path}")
     
     device_file = None
     
@@ -229,8 +296,8 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         # No O_CREAT/O_TRUNC: if the device vanished, open('wb') would silently
         # create a regular file of that name (e.g. in /dev) instead of failing.
         try:
-            device_file = open(os.open(target_device, os.O_WRONLY), 'wb', buffering=0)
-            logger.debug(f"Opened block device: {target_device}")
+            device_file = open(os.open(write_path, os.O_WRONLY), 'wb', buffering=0)
+            logger.debug(f"Opened block device: {write_path}")
         except PermissionError as e:
             raise PermissionError(
                 f"Cannot open block device (may need root privileges): {e}"
@@ -238,15 +305,17 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         except IOError as e:
             raise IOError(f"Cannot open block device: {e}")
         
-        # Refuse to write an image that does not fit on the target device.
-        # (Seeking to the end of a block device yields its size on Linux; on
-        # macOS raw devices this may return 0, in which case we skip the check.)
-        try:
-            device_size = os.lseek(device_file.fileno(), 0, os.SEEK_END)
-            os.lseek(device_file.fileno(), 0, os.SEEK_SET)
-        except OSError:
-            device_size = 0
-        if device_size and file_size > device_size:
+        device_size, sector_size = device_geometry(device_file.fileno())
+        if chunk_size % sector_size:
+            # Raw devices only accept whole sectors
+            chunk_size += sector_size - chunk_size % sector_size
+            logger.debug(f"Rounded chunk size up to {chunk_size} bytes (sector size {sector_size})")
+        # The last chunk is padded to a whole sector
+        padded_size = -(-file_size // sector_size) * sector_size
+        
+        # Refuse to write an image that does not fit on the target device
+        # (device_size is 0 if it cannot be determined)
+        if device_size and padded_size > device_size:
             raise IOError(
                 f"Image ({file_size} bytes) is larger than target device "
                 f"{target_device} ({device_size} bytes)"
@@ -281,7 +350,11 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                     )
                 
                 end_offset = min(offset + chunk_size, file_size)
-                chunk = memoryview(image_mmap[offset:end_offset])
+                data = image_mmap[offset:end_offset]
+                if len(data) % sector_size:
+                    # Last chunk: pad with zeros to a whole sector
+                    data += b"\0" * (sector_size - len(data) % sector_size)
+                chunk = memoryview(data)
                 
                 try:
                     # Unbuffered (raw) writes may be short - loop until the
@@ -300,8 +373,9 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                 except IOError as e:
                     raise IOError(f"Error writing to device: {e}")
                 
-                bytes_written += chunk_written
-                offset += chunk_written
+                # Progress counts image bytes, not sector padding
+                bytes_written += end_offset - offset
+                offset = end_offset
                 
                 # Calculate progress
                 percent = (bytes_written / file_size * 100) if file_size > 0 else 0
@@ -314,7 +388,7 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                         logger.debug(f"Error in progress callback: {e}")
                 
                 if progress is not None:
-                    progress.update(progress_task, advance=chunk_written)
+                    progress.update(progress_task, completed=bytes_written)
                 else:
                     # Log progress periodically
                     current_time = time.time()
