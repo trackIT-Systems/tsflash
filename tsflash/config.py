@@ -47,15 +47,17 @@ class DaemonConfig:
         self.block_size = config_dict.get('block_size', '4M')
         if not isinstance(self.block_size, str):
             raise ValueError("block_size must be a string (e.g., '4M')")
+        from .flash import parse_block_size
+        parse_block_size(self.block_size)  # raises ValueError if invalid
         
         # Optional: stable_delay (default: 3)
         self.stable_delay = config_dict.get('stable_delay', 3)
         try:
             self.stable_delay = float(self.stable_delay)
-            if self.stable_delay < 0:
-                raise ValueError("stable_delay must be non-negative")
         except (ValueError, TypeError):
             raise ValueError("stable_delay must be a number")
+        if self.stable_delay < 0:
+            raise ValueError("stable_delay must be non-negative")
         
         # Optional: log_level (default: "INFO")
         self.log_level = config_dict.get('log_level', 'INFO')
