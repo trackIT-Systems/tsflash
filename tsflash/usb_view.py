@@ -49,7 +49,8 @@ def describe_port(port: str, info: dict, ports: Dict[str, dict], system_disks: S
 
     child_ports = _children(port, ports)
     if child_ports:
-        line.append(f"  hub, {len(child_ports)} ports", style="dim")
+        line.append(f"  hub, {len(child_ports)} port{'s' if len(child_ports) != 1 else ''}",
+                    style="dim")
     if port == default_port:
         line.append(f"  ◀ {marker}", style="bold yellow")
 

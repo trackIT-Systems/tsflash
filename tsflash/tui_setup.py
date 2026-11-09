@@ -1,25 +1,33 @@
-"""Interactive setup page for `tsflash tui` started without an image.
+"""Setup screen of `tsflash tui` when started without an image.
 
-Everything is shown on one page: the images in the current directory, the USB
-port tree and the settings. The page is redrawn after each answer, so the
-choices made so far are always visible.
+One full-screen page with two lists, the images in the current directory and
+the USB port tree. The arrow keys move the selection, Tab switches between
+the lists and Enter starts flashing. The lists are refreshed while the page
+is shown, so a hub plugged in later appears (and is selected) by itself.
 """
 
 import os
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
-from rich.console import Console, Group
-from rich.rule import Rule
+from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.layout import Layout
+from rich.panel import Panel
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
-from .usb import find_first_usb_hub
+from .usb import find_first_usb_hub, port_sort_key
 from .usb_view import _format_size, build_tree
 
 IMAGE_SUFFIXES = (".img", ".iso")
+IMAGES = "images"
+PORTS = "ports"
+PAGE_STEP = 5
+
+IMAGE_MARKER = "▶ "
+PORT_MARKER = "selected"
 
 
 def find_images(directory: Path) -> List[Path]:
@@ -38,155 +46,173 @@ def find_images(directory: Path) -> List[Path]:
     return [path for _, path in sorted(images, key=lambda item: (-item[0], item[1].name))]
 
 
-@dataclass
-class SetupState:
-    directory: Path
-    images: List[Path]
-    ports: Dict[str, dict]
-    image: Optional[Path] = None
-    port: Optional[str] = None
-    message: Optional[str] = None
+def find_hubs(ports: Dict[str, dict]) -> List[str]:
+    """Ports with ports below them, in port order."""
+    return [p for p in sorted(ports, key=port_sort_key)
+            if any(q.startswith(p + ".") for q in ports)]
 
 
-def _display_path(path: Path) -> str:
+def display_path(path: Path) -> str:
     """Path with the (invoking user's) home directory shortened to ~."""
-    home = os.path.expanduser(f"~{os.environ['SUDO_USER']}" if os.environ.get("SUDO_USER")
-                              else "~")
+    sudo_user = os.environ.get("SUDO_USER")
+    home = os.path.expanduser(f"~{sudo_user}" if sudo_user else "~")
     text = str(path)
     return "~" + text[len(home):] if text == home or text.startswith(home + "/") else text
 
 
-class SetupAborted(Exception):
-    """The user left the setup page without starting."""
+class Window:
+    """Renders the part of a renderable that fits, scrolled to the line containing `focus`."""
+
+    def __init__(self, renderable, focus: Optional[str]):
+        self.renderable = renderable
+        self.focus = focus
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        lines = console.render_lines(self.renderable, options.update(height=None), pad=False)
+        height = options.height or len(lines)
+        index = 0
+        if self.focus:
+            index = next((i for i, line in enumerate(lines)
+                          if self.focus in "".join(s.text for s in line)), 0)
+        start = max(0, min(index - height // 2, len(lines) - height))
+        for line in lines[start:start + height]:
+            yield from line
+            yield Segment.line()
 
 
-def _images_table(state: SetupState) -> Table:
-    table = Table(box=None, pad_edge=False, show_header=False)
-    table.add_column(justify="right", style="bold cyan")
-    table.add_column()
-    table.add_column(justify="right", style="dim")
-    table.add_column(style="dim")
-    for number, path in enumerate(state.images, 1):
-        selected = state.image is not None and path.resolve() == state.image.resolve()
-        try:
-            stat = path.stat()
-            size, modified = _format_size(stat.st_size), time.strftime(
-                "%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
-        except OSError:
-            size, modified = "?", "?"
-        name = Text(("▶ " if selected else "  ") + path.name,
-                    style="bold yellow" if selected else "")
-        table.add_row(str(number), name, size, modified)
-    return table
+class SetupScreen:
+    """State and rendering of the setup screen; keys come in through handle_key()."""
 
+    def __init__(self, directory: Path, ports: Dict[str, dict], port: Optional[str] = None):
+        self.directory = Path(directory)
+        self.fixed_port = port
+        self.images: List[Path] = []
+        self.image: Optional[Path] = None
+        self.ports: Dict[str, dict] = {}
+        self.hubs: List[str] = []
+        self.port: Optional[str] = None
+        self._port_chosen = False
+        self.focus = IMAGES
+        self.message: Optional[str] = None
+        self.update_images(find_images(self.directory))
+        self.update_ports(ports)
 
-def render_page(state: SetupState, settings: Dict[str, str], system_disks: Set[str],
-                device_size: Callable[[str], Optional[int]]) -> Group:
-    parts = [Rule("tsflash setup", align="left", style="cyan"), Text()]
+    # Data updates
 
-    parts.append(Text(f"Images in {_display_path(state.directory)}", style="bold"))
-    if state.images:
-        parts.append(_images_table(state))
-    else:
-        parts.append(Text("  no .img or .iso files - enter a path", style="dim"))
-    if state.image is not None and state.image not in state.images:
-        parts.append(Text(f"  ▶ {state.image}", style="bold yellow"))
-    parts.append(Text())
+    def update_images(self, images: List[Path]) -> None:
+        """New image list; keeps the selected image if it is still there."""
+        self.images = images
+        if self.image not in images:
+            self.image = images[0] if images else None
 
-    parts.append(Text("USB ports", style="bold"))
-    if state.ports:
-        parts.extend(build_tree(state.ports, system_disks, device_size, state.port,
-                                marker="selected"))
-    else:
-        parts.append(Text("  no USB ports found", style="dim"))
-    parts.append(Text())
+    def update_ports(self, ports: Dict[str, dict]) -> None:
+        """New port scan; keeps a hub chosen with the keys, else follows the default hub."""
+        self.ports = ports
+        self.hubs = find_hubs(ports)
+        if self.fixed_port:
+            self.port = self.fixed_port
+        elif not (self._port_chosen and self.port in self.hubs):
+            self.port = find_first_usb_hub(ports)
+            self._port_chosen = False
 
-    parts.append(Text("Settings", style="bold"))
-    for key, value in settings.items():
-        parts.append(Text.assemble(f"  {key}: ", (value, "cyan")))
-    parts.append(Text())
+    # Keys
 
-    if state.message:
-        parts.append(Text(state.message, style="bold red"))
-    return Group(*parts)
+    def handle_key(self, key: str) -> Optional[str]:
+        """Apply a key. Returns "start" or "quit" when the screen is done."""
+        self.message = None
+        if key in ("q", "Q"):
+            return "quit"
+        if key in ("tab", "shift-tab", "left", "right"):
+            if not self.fixed_port:
+                self.focus = PORTS if self.focus == IMAGES else IMAGES
+        elif key in ("up", "down", "pageup", "pagedown", "home", "end"):
+            self._move(key)
+        elif key == "enter":
+            if self.image is None:
+                self.message = f"No .img or .iso file in {display_path(self.directory)}"
+            elif self.port is None:
+                self.message = "No USB hub found - connect one, it is selected automatically"
+            else:
+                return "start"
+        return None
 
+    def _move(self, key: str) -> None:
+        items = self.images if self.focus == IMAGES else self.hubs
+        if not items:
+            return
+        current = self.image if self.focus == IMAGES else self.port
+        index = items.index(current) if current in items else -1
+        steps = {"up": -1, "down": 1, "pageup": -PAGE_STEP, "pagedown": PAGE_STEP,
+                 "home": -len(items), "end": len(items)}
+        index = max(0, min(len(items) - 1, index + steps[key]))
+        if self.focus == IMAGES:
+            self.image = items[index]
+        else:
+            self.port = items[index]
+            self._port_chosen = True
 
-def _resolve_image(answer: str, images: List[Path]) -> Path:
-    if answer.isdigit():
-        index = int(answer)
-        if 1 <= index <= len(images):
-            return images[index - 1]
-        raise ValueError(f"No image number {answer}")
-    path = Path(os.path.expanduser(answer))
-    if not path.is_file():
-        raise ValueError(f"Not a file: {answer}")
-    return path
+    # Rendering
 
+    def _images_list(self) -> Table:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(no_wrap=True)
+        table.add_column(justify="right", style="dim")
+        table.add_column(style="dim")
+        for path in self.images:
+            selected = path == self.image
+            try:
+                stat = path.stat()
+                size = _format_size(stat.st_size)
+                modified = time.strftime("%Y-%m-%d %H:%M", time.localtime(stat.st_mtime))
+            except OSError:
+                size, modified = "?", "?"
+            name = Text((IMAGE_MARKER if selected else "  ") + path.name,
+                        style="bold yellow" if selected else "")
+            table.add_row(name, size, modified)
+        return table
 
-def run_setup(
-    port: Optional[str],
-    settings: Dict[str, str],
-    enumerate_ports: Callable[[], Dict[str, dict]],
-    system_disks: Set[str],
-    device_size: Callable[[str], Optional[int]],
-    ask: Callable[[str, Optional[str]], str],
-    console: Optional[Console] = None,
-    directory: Optional[Path] = None,
-):
-    """
-    Ask for the image and the port on one page, then for confirmation.
+    def _panel(self, content, title: str, focus: str) -> Panel:
+        focused = self.focus == focus
+        return Panel(content, title=title, title_align="left",
+                     border_style="cyan" if focused else "dim",
+                     subtitle="↑↓ to select" if focused else None, subtitle_align="right")
 
-    `ask(prompt, default)` reads one answer; it returns the default for an
-    empty answer. A port given on the command line is used without asking.
+    def render(self, settings: Dict[str, str], system_disks: Set[str],
+               device_size: Callable[[str], Optional[int]]) -> Layout:
+        images_title = f"Image  ·  {display_path(self.directory)}"
+        if self.images:
+            images = Window(self._images_list(), IMAGE_MARKER)
+        else:
+            images = Text("No .img or .iso files here. Start tsflash in the image's "
+                          "directory or pass the image: tsflash tui IMAGE", style="dim")
 
-    Returns:
-        (image_path, port)
+        if self.ports:
+            trees = build_tree(self.ports, system_disks, device_size, self.port,
+                               marker=PORT_MARKER)
+            ports = Window(Group(*trees), f"◀ {PORT_MARKER}")
+        else:
+            ports = Text("No USB ports found", style="dim")
+        ports_title = "USB hub to monitor" + ("  ·  set by --port" if self.fixed_port else "")
 
-    Raises:
-        SetupAborted: if the user does not confirm
-    """
-    console = console or Console()
-    directory = Path(directory or Path.cwd())
-    state = SetupState(directory=directory, images=find_images(directory),
-                       ports=enumerate_ports())
-    state.port = port or find_first_usb_hub(state.ports)
+        summary = Text.assemble(
+            (" Image ", "bold"), (self.image.name if self.image else "–", "yellow"),
+            ("   Port ", "bold"), (self.port or "–", "yellow"),
+            *[part for key, value in settings.items()
+              for part in ((f"   {key} ", "bold"), (value, "cyan"))])
 
-    def show():
-        console.clear()
-        console.print(render_page(state, settings, system_disks, device_size))
-        state.message = None
+        keys = " ↑↓ select   Tab switch list   Enter start   q quit"
+        if self.fixed_port:
+            keys = " ↑↓ select   Enter start   q quit"
+        footer = (Text(f" {self.message}", style="bold black on yellow") if self.message
+                  else Text(keys, style="dim"))
 
-    # Image
-    while state.image is None:
-        show()
-        default = "1" if state.images else None
-        answer = ask("Image (number or path)", default).strip()
-        if not answer:
-            state.message = "Select an image"
-            continue
-        try:
-            state.image = _resolve_image(answer, state.images)
-        except ValueError as e:
-            state.message = str(e)
-
-    # Port
-    if port is None:
-        while True:
-            if state.port is None and not state.message:
-                state.message = "No USB hub found - connect one and enter r, or enter a port"
-            show()
-            answer = ask("Port to monitor (r to rescan)", state.port).strip()
-            if answer.lower() == "r":
-                state.ports = enumerate_ports()
-                if state.port not in state.ports:
-                    state.port = find_first_usb_hub(state.ports)
-                continue
-            if answer in state.ports:
-                state.port = answer
-                break
-            state.message = f"Unknown port: {answer}" if answer else "Select a port"
-
-    show()
-    if ask("Start flashing? [y/n]", "y").strip().lower() not in ("y", "yes"):
-        raise SetupAborted()
-    return str(state.image), state.port
+        layout = Layout()
+        layout.split_column(
+            Layout(Text(" tsflash setup", style="bold cyan"), size=1),
+            Layout(self._panel(images, images_title, IMAGES),
+                   size=min(max(len(self.images), 1), 10) + 2),
+            Layout(self._panel(ports, ports_title, PORTS)),
+            Layout(summary, size=1),
+            Layout(footer, size=1),
+        )
+        return layout

@@ -20,7 +20,6 @@ from .usb_view import print_usb_tree
 from .daemon import run_daemon
 from .rpiboot import run_rpiboot
 from .tui import run_tui
-from .tui_setup import SetupAborted, run_setup
 
 
 def setup_logging(verbose=False, quiet=False):
@@ -214,42 +213,6 @@ def cmd_rpiboot(args):
     return exit_code
 
 
-def interactive_setup(args):
-    """Select the image and port on the setup page. Returns None if aborted."""
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        logging.getLogger(__name__).error(
-            "IMAGE-PATH is required when not running in a terminal")
-        return None
-
-    from rich.console import Console
-    from rich.prompt import Prompt
-
-    console = Console()
-
-    def ask(prompt, default):
-        if default is None:
-            return Prompt.ask(prompt, console=console)
-        return Prompt.ask(prompt, default=default, console=console)
-
-    try:
-        return run_setup(
-            port=args.port,
-            settings={"block size": args.block_size,
-                      "stable delay": f"{args.stable_delay:g} s"},
-            enumerate_ports=enumerate_all_usb_ports,
-            system_disks=get_system_disks(),
-            device_size=block_device_size,
-            ask=ask,
-            console=console,
-        )
-    except (SetupAborted, KeyboardInterrupt, EOFError):
-        console.print("\nAborted.")
-        return None
-    except RuntimeError as e:
-        logging.getLogger(__name__).error(f"USB enumeration error: {e}")
-        return None
-
-
 def cmd_tui(args):
     """Handle the tui command."""
     # Check if devmon is running
@@ -265,16 +228,15 @@ def cmd_tui(args):
     else:
         log_level = 'INFO'
 
-    image_path, port = args.image_path, args.port
-    if image_path is None:
-        selection = interactive_setup(args)
-        if selection is None:
-            return 1
-        image_path, port = selection
+    # Without an image, the TUI starts with the setup screen
+    if args.image_path is None and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        logging.getLogger(__name__).error(
+            "IMAGE-PATH is required when not running in a terminal")
+        return 1
 
     return run_tui(
-        image_path=image_path,
-        port=port,
+        image_path=args.image_path,
+        port=args.port,
         block_size=args.block_size,
         stable_delay=args.stable_delay,
         log_level=log_level

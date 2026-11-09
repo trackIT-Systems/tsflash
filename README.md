@@ -24,7 +24,7 @@ All commands that write to devices need root. `-v` (debug) and `-q` (warnings on
 sudo tsflash tui [IMAGE] [--port 1-2] [--block-size 4M] [--stable-delay 3]
 ```
 
-Without `IMAGE`, a setup page lists the `.img` and `.iso` files in the current directory (newest first) and the USB port tree, and asks for the image and the port. Press Enter to accept the newest image and the default hub, or type a number, path or port name.
+Without `IMAGE`, the TUI starts with a setup screen listing the `.img` and `.iso` files in the current directory (newest first) and the USB port tree. The newest image and the default hub are preselected: ↑/↓ change the selection, Tab switches between the lists, Enter starts and `q` quits. The lists update while the screen is shown, so a hub plugged in later appears and is selected.
 
 Monitors the default hub (or `--port`) and flashes each device after it has been connected for `--stable-delay` seconds. To quit, press `q` or `Ctrl+C` twice within 3 seconds; any other key cancels. Flash operations still running are aborted, and the affected devices are listed as incomplete on exit.
 
