@@ -1,8 +1,8 @@
 """Setup screen of `tsflash tui` when started without an image.
 
 One full-screen page with two lists, the images in the current directory and
-the USB port tree. The arrow keys move the selection, Tab switches between
-the lists and Enter starts flashing. The lists are refreshed while the page
+the USB port tree. The arrow keys move the selection, Enter confirms the image
+and then the hub (which starts monitoring), Esc goes back to the image. The lists are refreshed while the page
 is shown, so a hub plugged in later appears (and is selected) by itself.
 """
 
@@ -83,24 +83,30 @@ class Window:
 class SetupScreen:
     """State and rendering of the setup screen; keys come in through handle_key()."""
 
-    def __init__(self, directory: Path, ports: Dict[str, dict], port: Optional[str] = None):
-        self.directory = Path(directory)
-        self.fixed_port = port
+    def __init__(self, directory: Path, ports: Dict[str, dict], port: Optional[str] = None,
+                 image: Optional[Path] = None):
+        """`port` and `image` preselect a hub and an image (e.g. from the command line)."""
+        self.directory = Path(os.path.abspath(directory))
+        self.extra_image = Path(os.path.abspath(image)) if image else None
         self.images: List[Path] = []
         self.image: Optional[Path] = None
         self.ports: Dict[str, dict] = {}
         self.hubs: List[str] = []
-        self.port: Optional[str] = None
-        self._port_chosen = False
+        self.port: Optional[str] = port
+        self._port_chosen = port is not None
         self.focus = IMAGES
         self.message: Optional[str] = None
         self.update_images(find_images(self.directory))
+        if self.extra_image is not None:
+            self.image = self.extra_image
         self.update_ports(ports)
 
     # Data updates
 
     def update_images(self, images: List[Path]) -> None:
         """New image list; keeps the selected image if it is still there."""
+        if self.extra_image is not None and self.extra_image not in images:
+            images = [self.extra_image] + images   # preselected image from elsewhere
         self.images = images
         if self.image not in images:
             self.image = images[0] if images else None
@@ -109,9 +115,9 @@ class SetupScreen:
         """New port scan; keeps a hub chosen with the keys, else follows the default hub."""
         self.ports = ports
         self.hubs = find_hubs(ports)
-        if self.fixed_port:
-            self.port = self.fixed_port
-        elif not (self._port_chosen and self.port in self.hubs):
+        if self._port_chosen and self.port in ports and self.port not in self.hubs:
+            self.hubs = sorted(self.hubs + [self.port], key=port_sort_key)  # e.g. from --port
+        if not (self._port_chosen and self.port in self.hubs):
             self.port = find_first_usb_hub(ports)
             self._port_chosen = False
 
@@ -122,15 +128,17 @@ class SetupScreen:
         self.message = None
         if key in ("q", "Q"):
             return "quit"
-        if key in ("tab", "shift-tab", "left", "right"):
-            if not self.fixed_port:
-                self.focus = PORTS if self.focus == IMAGES else IMAGES
-        elif key in ("up", "down", "pageup", "pagedown", "home", "end"):
+        if key in ("up", "down", "pageup", "pagedown", "home", "end"):
             self._move(key)
-        elif key == "enter":
+        elif key in ("esc", "backspace", "left", "shift-tab"):
+            self.focus = IMAGES
+        elif key == "enter" and self.focus == IMAGES:
             if self.image is None:
                 self.message = f"No .img or .iso file in {display_path(self.directory)}"
-            elif self.port is None:
+            else:
+                self.focus = PORTS
+        elif key == "enter":
+            if self.port is None:
                 self.message = "No USB hub found - connect one, it is selected automatically"
             else:
                 return "start"
@@ -173,13 +181,15 @@ class SetupScreen:
 
     def _panel(self, content, title: str, focus: str) -> Panel:
         focused = self.focus == focus
-        return Panel(content, title=title, title_align="left",
+        done = focus == IMAGES and self.focus == PORTS
+        return Panel(content, title=("✓ " if done else "") + title, title_align="left",
                      border_style="cyan" if focused else "dim",
-                     subtitle="↑↓ to select" if focused else None, subtitle_align="right")
+                     subtitle="↑↓ to select, Enter to confirm" if focused else None,
+                     subtitle_align="right")
 
     def render(self, settings: Dict[str, str], system_disks: Set[str],
                device_size: Callable[[str], Optional[int]]) -> Layout:
-        images_title = f"Image  ·  {display_path(self.directory)}"
+        images_title = f"1 Image  ·  {display_path(self.directory)}"
         if self.images:
             images = Window(self._images_list(), IMAGE_MARKER)
         else:
@@ -192,7 +202,7 @@ class SetupScreen:
             ports = Window(Group(*trees), f"◀ {PORT_MARKER}")
         else:
             ports = Text("No USB ports found", style="dim")
-        ports_title = "USB hub to monitor" + ("  ·  set by --port" if self.fixed_port else "")
+        ports_title = "2 USB hub to monitor"
 
         summary = Text.assemble(
             (" Image ", "bold"), (self.image.name if self.image else "–", "yellow"),
@@ -200,9 +210,10 @@ class SetupScreen:
             *[part for key, value in settings.items()
               for part in ((f"   {key} ", "bold"), (value, "cyan"))])
 
-        keys = " ↑↓ select   Tab switch list   Enter start   q quit"
-        if self.fixed_port:
-            keys = " ↑↓ select   Enter start   q quit"
+        if self.focus == IMAGES:
+            keys = " ↑↓ select   Enter confirm image   q quit"
+        else:
+            keys = " ↑↓ select   Enter start   Esc back to image   q quit"
         footer = (Text(f" {self.message}", style="bold black on yellow") if self.message
                   else Text(keys, style="dim"))
 

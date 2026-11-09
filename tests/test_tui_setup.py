@@ -83,7 +83,15 @@ def test_default_hub_is_first_hub_without_hubs_below():
 def test_defaults_are_newest_image_and_default_hub(images):
     screen = SetupScreen(images, HUBS)
     assert screen.image.name == "new.ISO" and screen.port == "1-1.2"
+    assert press(screen, "enter") is None and screen.focus == PORTS   # image confirmed
     assert press(screen, "enter") == "start"
+
+
+def test_esc_goes_back_to_the_image(images):
+    screen = SetupScreen(images, HUBS)
+    press(screen, "enter", "esc", "down")
+    assert screen.focus == IMAGES and screen.image.name == "mid.img"
+    assert "Enter confirm image" in render(screen)
 
 
 # Navigation
@@ -92,17 +100,18 @@ def test_arrows_move_in_the_focused_list(images):
     screen = SetupScreen(images, HUBS)
     press(screen, "down", "down", "down")          # stops at the last image
     assert screen.image.name == "old.img"
-    press(screen, "tab", "up")
+    press(screen, "enter", "up")
     assert screen.focus == PORTS and screen.port == "1-1"
     press(screen, "end")
     assert screen.port == "1-2"
-    press(screen, "shift-tab", "home")
+    assert "1 Image" in render(screen) and "✓" in render(screen)
+    press(screen, "esc", "home")
     assert screen.focus == IMAGES and screen.image.name == "new.ISO"
 
 
 def test_only_hubs_are_selectable(images):
     screen = SetupScreen(images, HUBS)
-    press(screen, "tab")
+    press(screen, "enter")
     seen = {screen.port}
     for _ in range(5):
         press(screen, "down")
@@ -110,15 +119,26 @@ def test_only_hubs_are_selectable(images):
     assert seen == {"1-1.2", "1-2"}
 
 
-def test_quit(images):
+def test_quit_in_both_steps(images):
     assert press(SetupScreen(images, HUBS), "q") == "quit"
+    assert press(SetupScreen(images, HUBS), "enter", "q") == "quit"
 
 
-def test_fixed_port_cannot_be_changed(images):
-    screen = SetupScreen(images, HUBS, port="1-2")
-    press(screen, "tab", "down")
-    assert screen.focus == IMAGES and screen.port == "1-2"
-    assert "set by --port" in render(screen)
+def test_preselected_port_and_image(images, tmp_path_factory):
+    elsewhere = tmp_path_factory.mktemp("other") / "far.img"
+    elsewhere.write_bytes(b"x")
+    screen = SetupScreen(images, HUBS, port="1-2.1", image=elsewhere)
+    assert screen.image == elsewhere and screen.images[0] == elsewhere
+    assert screen.port == "1-2.1"                  # not a hub, but given with --port
+    screen.update_ports(HUBS)
+    assert screen.port == "1-2.1"
+    assert press(screen, "enter", "enter") == "start"
+
+
+def test_preselected_image_in_directory_is_not_listed_twice(images, monkeypatch):
+    monkeypatch.chdir(images)
+    screen = SetupScreen(images, HUBS, image="mid.img")
+    assert screen.image.name == "mid.img" and len(screen.images) == 3
 
 
 # Rescans
@@ -126,14 +146,14 @@ def test_fixed_port_cannot_be_changed(images):
 def test_hub_plugged_in_later_is_selected(images):
     screen = SetupScreen(images, {"1-1": EMPTY})
     assert screen.port is None
-    assert press(screen, "enter") is None and "No USB hub found" in render(screen)
+    assert press(screen, "enter", "enter") is None and "No USB hub found" in render(screen)
     screen.update_ports(HUBS)
     assert screen.port == "1-1.2"
 
 
 def test_hub_chosen_with_keys_is_kept_on_rescan(images):
     screen = SetupScreen(images, HUBS)
-    press(screen, "tab", "end")
+    press(screen, "enter", "end")
     screen.update_ports(dict(HUBS, **{"1-3": dev("New Hub"), "1-3.1": EMPTY}))
     assert screen.port == "1-2"
     screen.update_ports({k: v for k, v in HUBS.items() if not k.startswith("1-2")})
@@ -162,7 +182,7 @@ def test_page_shows_lists_and_summary(images):
     assert "▶ new.ISO" in text and "mid.img" in text
     assert "1-1.2  External Hub" in text and "◀ selected" in text
     assert "Port 1-1.2" in text and "Block size 4M" in text
-    assert "Enter start" in text
+    assert "Enter confirm image" in text
 
 
 def test_long_port_tree_scrolls_to_the_selection(images):
@@ -228,10 +248,18 @@ def run_on_pty(directory, keys):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pty")
 def test_setup_screen_starts_monitor(image_file):
-    output, exit_code = run_on_pty(image_file.parent, [b"\x1b[B", b"\r"])
+    output, exit_code = run_on_pty(image_file.parent, [b"\x1b[B", b"\r", b"\r"])
     assert "tsflash setup" in output
     assert "q / Ctrl-C: quit" in output            # the monitor view is shown
     assert exit_code is None                       # still running
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pty")
+def test_monitor_returns_to_setup_with_s(image_file):
+    output, exit_code = run_on_pty(image_file.parent, [b"\r", b"\r", b"s", b"q"])
+    monitor_at = output.index("q / Ctrl-C: quit")
+    assert "tsflash setup" in output[monitor_at:]  # setup shown again after the monitor
+    assert exit_code == 0
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pty")

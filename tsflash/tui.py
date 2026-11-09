@@ -249,10 +249,14 @@ def _create_log_panel(log_lines) -> Panel:
     return Panel(content, title="Logs", border_style="green")
 
 
-def _create_footer(quit_prompt: bool, active_flashes: int) -> Text:
-    """Key hints, or the quit confirmation prompt."""
+def _create_footer(quit_prompt: bool, active_flashes: int, setup_prompt: bool = False) -> Text:
+    """Key hints, or the quit / back-to-setup confirmation prompt."""
+    if setup_prompt:
+        return Text(f" Press s again to return to setup - {active_flashes} flash operation(s) "
+                    f"in progress will be ABORTED, any other key to cancel ",
+                    style="bold white on red")
     if not quit_prompt:
-        return Text(" q / Ctrl-C: quit", style="dim")
+        return Text(" s: setup   q / Ctrl-C: quit", style="dim")
     msg = " Press Ctrl-C (or q) again to quit"
     if active_flashes:
         msg += f" - {active_flashes} flash operation(s) in progress will be ABORTED"
@@ -262,7 +266,7 @@ def _create_footer(quit_prompt: bool, active_flashes: int) -> Text:
 
 def _create_layout(config: DaemonConfig, monitor_port: Optional[str], ports_data: Dict,
                    port_states: Dict[str, dict], log_lines, console_width: int,
-                   quit_prompt: bool, active_flashes: int) -> Layout:
+                   quit_prompt: bool, active_flashes: int, setup_prompt: bool = False) -> Layout:
     """Create the main TUI layout."""
     layout = Layout()
 
@@ -283,7 +287,7 @@ def _create_layout(config: DaemonConfig, monitor_port: Optional[str], ports_data
     )
     layout["ports"].update(_create_ports_table(port_states, ports_data, monitor_port, config))
     layout["logs"].update(_create_log_panel(log_lines))
-    layout["footer"].update(_create_footer(quit_prompt, active_flashes))
+    layout["footer"].update(_create_footer(quit_prompt, active_flashes, setup_prompt))
     return layout
 
 
@@ -372,14 +376,15 @@ class TerminalSession:
 
 def _start_from_setup(session: TerminalSession, port: Optional[str], settings: Dict[str, str],
                       make_config: Callable[[str, str], DaemonConfig],
-                      directory: Optional[str] = None):
+                      directory: Optional[str] = None, image_path: Optional[str] = None):
     """
     Run the setup screen until the user starts or quits.
 
     Returns:
         (config, image, ports_data, monitor_port), or None if the user quit
     """
-    screen = SetupScreen(Path(directory or os.getcwd()), enumerate_all_usb_ports(), port)
+    screen = SetupScreen(Path(directory or os.getcwd()), enumerate_all_usb_ports(), port,
+                         Path(image_path) if image_path else None)
     system_disks = get_system_disks()
     quit_requested = threading.Event()
     session.on_sigint = quit_requested.set
@@ -422,9 +427,14 @@ def _start_from_setup(session: TerminalSession, port: Optional[str], settings: D
 
 
 def _run_live(session: TerminalSession, monitor: PortMonitor, monitor_thread: threading.Thread,
-              config: DaemonConfig, initial_ports_data: Dict, log_handler: TUIHandler) -> None:
-    """Run the monitor display until the user confirms quitting."""
+              config: DaemonConfig, initial_ports_data: Dict, log_handler: TUIHandler) -> str:
+    """
+    Run the monitor display until the user confirms quitting ("quit") or
+    returning to the setup screen ("setup").
+    """
     quit_ctl = QuitController()
+    # Returning to setup aborts running flashes, so it needs a second press then
+    setup_ctl = QuitController()
     session.on_sigint = quit_ctl.request
 
     def _on_sigterm():
@@ -436,23 +446,44 @@ def _run_live(session: TerminalSession, monitor: PortMonitor, monitor_thread: th
     while not quit_ctl.confirmed:
         for key in session.keys():
             if key.lower() == 'q':
+                setup_ctl.dismiss()
                 quit_ctl.request()
+            elif key.lower() == 's':
+                quit_ctl.dismiss()
+                if monitor.active_flash_count() == 0:
+                    setup_ctl.force()
+                else:
+                    setup_ctl.request()
             else:
                 quit_ctl.dismiss()
+                setup_ctl.dismiss()
 
         if quit_ctl.confirmed:
             break
+        if setup_ctl.confirmed:
+            logger.info("Returning to setup")
+            return "setup"
 
         port_states, ports_data = monitor.snapshot()
+        active = monitor.active_flash_count()
         session.show(_create_layout(
             config, monitor.monitor_port, ports_data or initial_ports_data,
             port_states, log_handler.lines(), session.console.width,
-            quit_ctl.prompt_active(), monitor.active_flash_count()))
+            quit_ctl.prompt_active(), active, setup_ctl.prompt_active() and active > 0))
 
         if not monitor_thread.is_alive():
             break
 
         time.sleep(0.1)
+    return "quit"
+
+
+def _aborted_devices(monitor: PortMonitor) -> List[tuple]:
+    """(port, devices) of the flash operations aborted by the monitor's shutdown."""
+    port_states, _ = monitor.snapshot()
+    return [(port_str, ", ".join(state.get('block_devices') or []) or "?")
+            for port_str, state in sorted(port_states.items())
+            if state.get('state') == FAILED and (state.get('error') or '').startswith('Aborted')]
 
 
 def run_tui(
@@ -512,30 +543,39 @@ def run_tui(
                 _report_error(error_msg)
                 return 1
 
+        aborted = []
+        settings = {"Block size": block_size, "Stable delay": f"{stable_delay:g} s"}
         with TerminalSession() as session:
-            if image is None:
-                settings = {"Block size": block_size, "Stable delay": f"{stable_delay:g} s"}
-                started = _start_from_setup(session, port, settings, make_config, directory)
-                if started is None:
-                    return 0
-                config, image, ports_data, monitor_port = started
+            while True:
+                if image is None:
+                    started = _start_from_setup(session, port, settings, make_config,
+                                                directory, image_path)
+                    if started is None:
+                        break
+                    config, image, ports_data, monitor_port = started
 
-            monitor = PortMonitor(monitor_port, config, image)
-            monitor_thread = threading.Thread(target=monitor.run, daemon=True, name="monitor")
-            monitor_thread.start()
-            try:
-                _run_live(session, monitor, monitor_thread, config, ports_data, log_handler)
-            finally:
-                monitor.shutdown()
-                monitor_thread.join(timeout=2.0)
+                monitor = PortMonitor(monitor_port, config, image)
+                monitor_thread = threading.Thread(target=monitor.run, daemon=True,
+                                                  name="monitor")
+                monitor_thread.start()
+                try:
+                    action = _run_live(session, monitor, monitor_thread, config, ports_data,
+                                       log_handler)
+                finally:
+                    monitor.shutdown()
+                    monitor_thread.join(timeout=2.0)
+                    aborted.extend(_aborted_devices(monitor))
+                    image.close()
+                    image = None
+                if action != "setup":
+                    break
+                # Back to setup, with the current choices preselected
+                image_path, port = config.image_path, monitor_port
 
         # Tell the user which devices were left incomplete
-        port_states, _ = monitor.snapshot()
-        for port_str, state in sorted(port_states.items()):
-            if state.get('state') == FAILED and (state.get('error') or '').startswith('Aborted'):
-                devices = ", ".join(state.get('block_devices') or []) or "?"
-                print(f"WARNING: flashing {devices} on port {port_str} was aborted - "
-                      f"the device is incomplete", file=sys.stderr)
+        for port_str, devices in aborted:
+            print(f"WARNING: flashing {devices} on port {port_str} was aborted - "
+                  f"the device is incomplete", file=sys.stderr)
 
         logger.info("TUI shutting down")
         return 0
