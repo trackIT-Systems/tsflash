@@ -213,6 +213,11 @@ sys.exit(tui.run_tui(None, directory=sys.argv[1]))
 
 
 def run_on_pty(directory, keys):
+    """
+    Run the TUI on a pty and type `keys` into it. A key can be given as
+    (key, marker): it is then only sent once `marker` was output after the
+    previous key, so slow machines don't merge keys into one read.
+    """
     import pty
 
     master, slave = pty.openpty()
@@ -231,9 +236,19 @@ def run_on_pty(directory, keys):
                 except OSError:
                     return
 
+    def wait_for(marker, since, timeout=10.0):
+        end = time.time() + timeout
+        while marker.encode() not in output[since:] and time.time() < end:
+            drain(0.05)
+
     try:
         drain(1.5)
+        sent_at = 0
         for key in keys:
+            if isinstance(key, tuple):
+                key, marker = key
+                wait_for(marker, sent_at)
+            sent_at = len(output)
             os.write(master, key)
             drain(0.5)
         drain(1.0)
@@ -256,7 +271,8 @@ def test_setup_screen_starts_monitor(image_file):
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a pty")
 def test_monitor_returns_to_setup_with_s(image_file):
-    output, exit_code = run_on_pty(image_file.parent, [b"\r", b"\r", b"s", b"q"])
+    output, exit_code = run_on_pty(image_file.parent, [
+        b"\r", b"\r", (b"s", "q / Ctrl-C: quit"), (b"q", "tsflash setup")])
     monitor_at = output.index("q / Ctrl-C: quit")
     assert "tsflash setup" in output[monitor_at:]  # setup shown again after the monitor
     assert exit_code == 0
