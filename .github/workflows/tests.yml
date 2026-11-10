@@ -45,8 +45,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # All supported versions on Linux; macOS runners are slow and scarce,
+        # so only the oldest and newest Python there.
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13", "3.14"]
+        include:
+          - { os: macos-latest, python: "3.11" }
+          - { os: macos-latest, python: "3.14" }
     steps:
       - uses: actions/checkout@v5
 
