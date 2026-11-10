@@ -7,7 +7,14 @@ import pytest
 
 from tsflash.flash import FlashAborted
 from tsflash.monitor import (
-    BOOTING, COMPLETED, FAILED, FLASHING, IGNORED, UNKNOWN, WAITING, PortMonitor,
+    BOOTING,
+    COMPLETED,
+    FAILED,
+    FLASHING,
+    IGNORED,
+    UNKNOWN,
+    WAITING,
+    PortMonitor,
 )
 
 GiB = 1 << 30

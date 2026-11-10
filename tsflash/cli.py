@@ -7,8 +7,10 @@ import subprocess
 import sys
 
 from . import __version__
-from .flash import flash_image, create_image_mmap
-from .validators import validate_image_file, validate_block_device, disk_for_device, get_system_disks
+from .daemon import run_daemon
+from .flash import create_image_mmap, flash_image
+from .rpiboot import run_rpiboot
+from .tui import run_tui
 from .usb import (
     block_device_size,
     enumerate_all_usb_ports,
@@ -17,9 +19,12 @@ from .usb import (
     format_usb_output,
 )
 from .usb_view import print_usb_tree
-from .daemon import run_daemon
-from .rpiboot import run_rpiboot
-from .tui import run_tui
+from .validators import (
+    disk_for_device,
+    get_system_disks,
+    validate_block_device,
+    validate_image_file,
+)
 
 
 def setup_logging(verbose=False, quiet=False):

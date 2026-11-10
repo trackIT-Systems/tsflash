@@ -54,7 +54,10 @@ class Config:
 
 def test_layout_renders_all_states():
     empty = {"vendor_id": None, "product_id": None, "block_devices": []}
-    dev = lambda *b: {"vendor_id": "1", "product_id": "2", "block_devices": list(b)}
+
+    def dev(*b):
+        return {"vendor_id": "1", "product_id": "2", "block_devices": list(b)}
+
     ports = {"1-1": dev(), "1-1.1": dev("/dev/sda"), "1-1.2": dev("/dev/sdb"),
              "1-1.3": dev("/dev/sdc"), "1-1.4": empty}
     states = {

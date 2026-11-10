@@ -1,15 +1,16 @@
 """Core flashing functionality."""
 
 import fcntl
+import logging
+import mmap
 import os
 import platform
 import re
 import struct
 import subprocess
-import logging
 import time
-import mmap
 from typing import Union
+
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -88,8 +89,8 @@ def parse_block_size(block_size_str):
     number_str = block_size_str[:-len(unit)] if unit else block_size_str
     try:
         number = int(number_str)
-    except ValueError:
-        raise ValueError(f"Invalid block size format: {block_size_str}")
+    except ValueError as e:
+        raise ValueError(f"Invalid block size format: {block_size_str}") from e
     
     size = number * (multipliers[unit] if unit else 1)
     if size <= 0:
@@ -130,7 +131,7 @@ def create_image_mmap(image_path: str) -> MappedImage:
         return MappedImage(image_mmap, image_file)
         
     except IOError as e:
-        raise IOError(f"Cannot create memory-mapped image: {e}")
+        raise IOError(f"Cannot create memory-mapped image: {e}") from e
 
 
 # macOS <sys/disk.h>: _IOR('d', 24, uint32_t) and _IOR('d', 25, uint64_t)
@@ -267,7 +268,7 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         chunk_size = parse_block_size(block_size)
         logger.debug(f"Using chunk size: {chunk_size} bytes ({block_size})")
     except ValueError as e:
-        raise ValueError(f"Invalid block size '{block_size}': {e}")
+        raise ValueError(f"Invalid block size '{block_size}': {e}") from e
     
     # Handle both MappedImage wrapper and raw mmap objects
     if isinstance(image_source, MappedImage):
@@ -301,9 +302,9 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
         except PermissionError as e:
             raise PermissionError(
                 f"Cannot open block device (may need root privileges): {e}"
-            )
+            ) from e
         except IOError as e:
-            raise IOError(f"Cannot open block device: {e}")
+            raise IOError(f"Cannot open block device: {e}") from e
         
         device_size, sector_size = device_geometry(device_file.fileno())
         if chunk_size % sector_size:
@@ -369,9 +370,9 @@ def flash_image(image_source: Union[MappedImage, mmap.mmap], target_device: str,
                             )
                         chunk_written += n
                 except PermissionError as e:
-                    raise PermissionError(f"Permission denied writing to device: {e}")
+                    raise PermissionError(f"Permission denied writing to device: {e}") from e
                 except IOError as e:
-                    raise IOError(f"Error writing to device: {e}")
+                    raise IOError(f"Error writing to device: {e}") from e
                 
                 # Progress counts image bytes, not sector padding
                 bytes_written += end_offset - offset

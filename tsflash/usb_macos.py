@@ -201,12 +201,12 @@ def enumerate_ports(run=subprocess.run) -> Dict[str, dict]:
     try:
         result = run(IOREG_COMMAND, capture_output=True, check=True, timeout=10)
     except (OSError, subprocess.SubprocessError) as e:
-        raise RuntimeError(f"Could not read the I/O Registry via ioreg: {e}")
+        raise RuntimeError(f"Could not read the I/O Registry via ioreg: {e}") from e
     _disk_sizes.clear()
     try:
         raw_ports = parse_ioreg(result.stdout)
     except (plistlib.InvalidFileException, ValueError) as e:
-        raise RuntimeError(f"Could not parse ioreg output: {e}")
+        raise RuntimeError(f"Could not parse ioreg output: {e}") from e
     return unify_by_container_id(raw_ports)
 
 

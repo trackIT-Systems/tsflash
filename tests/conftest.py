@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from tsflash.flash import MappedImage, create_image_mmap
+from tsflash.flash import create_image_mmap
 
 
 @pytest.fixture

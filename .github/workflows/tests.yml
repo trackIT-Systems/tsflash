@@ -14,6 +14,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Ruff
+        run: uvx ruff check --output-format github .
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check package metadata
+        run: uvx twine check --strict dist/*
+
   test:
     name: ${{ matrix.os }} / Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
@@ -34,4 +59,4 @@ jobs:
         run: uv pip install . --group test
 
       - name: Test
-        run: python -m pytest -v
+        run: python -m pytest -v --cov=tsflash --cov-report=term-missing:skip-covered --cov-report=markdown-append:$GITHUB_STEP_SUMMARY

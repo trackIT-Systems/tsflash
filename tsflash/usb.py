@@ -196,11 +196,6 @@ def _get_related_bus_ports(port_str, raw_ports=None):
         return ports
     
     # Try to find USB 3.0 counterpart
-    # Extract the hub part to check hub relations
-    parts = port_str.split('.', 1)
-    hub_port = parts[0]
-    
-    # Build hub relations if not already available
     hub_relations = _build_hub_relations(raw_ports)
     
     # Find USB 3.0 counterpart
@@ -568,7 +563,7 @@ def enumerate_all_usb_ports():
                 bus_ports = _enumerate_ports_recursive(bus_num, bus_entry, "")
                 all_ports.update(bus_ports)
     except (IOError, OSError, PermissionError) as e:
-        raise RuntimeError(f"Error reading USB sysfs: {e}")
+        raise RuntimeError(f"Error reading USB sysfs: {e}") from e
     
     # Unify USB 2.0/3.0 port pairs
     unified_ports = unify_ports(all_ports)

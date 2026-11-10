@@ -2,7 +2,6 @@
 
 import logging
 import os
-from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -54,8 +53,8 @@ class DaemonConfig:
         self.stable_delay = config_dict.get('stable_delay', 3)
         try:
             self.stable_delay = float(self.stable_delay)
-        except (ValueError, TypeError):
-            raise ValueError("stable_delay must be a number")
+        except (ValueError, TypeError) as e:
+            raise ValueError("stable_delay must be a number") from e
         if self.stable_delay < 0:
             raise ValueError("stable_delay must be non-negative")
         
@@ -100,9 +99,9 @@ def load_config(config_path: Optional[str] = None) -> DaemonConfig:
         with open(config_path, 'r') as f:
             config_dict = yaml.safe_load(f)
     except yaml.YAMLError as e:
-        raise ValueError(f"Invalid YAML in config file: {e}")
+        raise ValueError(f"Invalid YAML in config file: {e}") from e
     except IOError as e:
-        raise IOError(f"Cannot read config file: {e}")
+        raise IOError(f"Cannot read config file: {e}") from e
     
     if config_dict is None:
         raise ValueError("Configuration file is empty")
@@ -116,4 +115,4 @@ def load_config(config_path: Optional[str] = None) -> DaemonConfig:
         logger.info(f"Loaded configuration from {config_path}")
         return config
     except ValueError as e:
-        raise ValueError(f"Invalid configuration: {e}")
+        raise ValueError(f"Invalid configuration: {e}") from e
