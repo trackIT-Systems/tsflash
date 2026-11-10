@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 # Path to USB sysfs
 USB_SYSFS_PATH = Path("/sys/bus/usb/devices")
 SYSFS_CLASS_BLOCK = Path("/sys/class/block")
+SYS_BLOCK_PATH = Path("/sys/block")
+DEV_PATH = Path("/dev")
 
 
 def _read_file_safe(path, default=None):
@@ -238,7 +240,7 @@ def _find_block_devices(device_path, port_str, raw_ports=None):
         # Get all block device names
         for block_name in block_dir.iterdir():
             if block_name.is_dir():
-                dev_path = Path(f"/dev/{block_name.name}")
+                dev_path = DEV_PATH / block_name.name
                 if dev_path.exists():
                     block_devices.append(str(dev_path))
     
@@ -246,7 +248,7 @@ def _find_block_devices(device_path, port_str, raw_ports=None):
     # USB storage devices go through SCSI, so we need to follow the path up to find USB device
     if not block_devices:
         try:
-            sys_block = Path("/sys/block")
+            sys_block = SYS_BLOCK_PATH
             if sys_block.exists():
                 for block_name in sys_block.iterdir():
                     # Skip partitions (they have numbers after the base name like sda1, sda2)
@@ -288,7 +290,7 @@ def _find_block_devices(device_path, port_str, raw_ports=None):
                                     break
                             
                             if port_found:
-                                dev_path = Path(f"/dev/{block_name.name}")
+                                dev_path = DEV_PATH / block_name.name
                                 if dev_path.exists():
                                     block_devices.append(str(dev_path))
                         except (OSError, RuntimeError) as e:
